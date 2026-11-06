@@ -40,27 +40,71 @@ On the Pi:
 ```
 
 Flags: `-hflip`, `-vflip` (both = rotate 180°), `-data DIR` (config and
-captures, default `./data`), `-helper external` (don't spawn the helper),
-`-helper-cmd "..."` (custom helper command). Run `./camweb -h` for all.
+captures, default `./data`), `-tls-cert FILE -tls-key FILE` (serve HTTPS, see
+below), `-helper external` (don't spawn the helper), `-helper-cmd "..."`
+(custom helper command). Run `./camweb -h` for all.
 
 To run it as a service, see [`deploy/camweb.service`](deploy/camweb.service).
 
 ## Opening the page (HTTPS / secure context)
 
 The browser's video decoder (WebCodecs) only works on **HTTPS or
-`http://localhost`**. The app serves plain HTTP, so opening
-`http://<pi-address>:8080` directly shows a warning instead of video. Pick one:
+`http://localhost`**. Over plain HTTP, opening `http://<pi-address>:8080`
+shows a warning instead of video.
 
-- **SSH tunnel** (works on the LAN and over the internet):
+### Built-in HTTPS with your own small CA (recommended on the LAN)
+
+1. On your computer, create a private CA and a certificate for the names and
+   IPs you use to reach the Pi:
+
+   ```bash
+   make cert CERT_HOSTS=raspberrypi.local,raspberrypi,192.168.1.50
+   ```
+
+   This writes `certs/ca.crt`, `certs/ca.key`, `certs/server.crt` and
+   `certs/server.key`. The CA is created once and reused when you run
+   `make cert` again (for example after the Pi gets a new IP), so you install
+   it only once. Keep `ca.key` private: anyone with it can make certificates
+   your browser will trust.
+2. Copy the server certificate and key to the Pi:
+
+   ```bash
+   make deploy-cert PI=pi@raspberrypi.local
+   ```
+
+3. Start camweb with TLS:
+
+   ```bash
+   ./camweb -listen :8443 -tls-cert server.crt -tls-key server.key
+   ```
+
+4. Trust `certs/ca.crt` once on each device that opens the page, then open
+   `https://raspberrypi.local:8443`:
+   - **Chrome/Edge (Windows, Linux):** Settings → Privacy and security →
+     Security → Manage certificates → Authorities → Import.
+   - **Firefox:** Settings → Privacy & Security → Certificates → View
+     Certificates → Authorities → Import (tick "trust this CA to identify
+     websites").
+   - **macOS / Safari:** open `ca.crt` in Keychain Access (System keychain),
+     then set it to "Always Trust".
+   - **iOS:** install the profile, then enable it under Settings → General →
+     About → Certificate Trust Settings.
+   - **Android:** Settings → Security → Encryption & credentials → Install a
+     certificate → CA certificate.
+
+The certificate only works for the names and IPs listed in `CERT_HOSTS`. If
+the browser shows a name error, run `make cert` again with the address you use
+and repeat steps 2–3.
+
+### Other options
+
+- **SSH tunnel** (works on the LAN and over the internet, no certificates):
 
   ```bash
   ssh -L 8080:localhost:8080 pi@raspberrypi.local
   ```
 
   then open `http://localhost:8080`.
-- **Chrome/Edge flag** for LAN testing: open
-  `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, add
-  `http://raspberrypi.local:8080`, relaunch.
 - **HTTPS tunnel/proxy** for internet access: Tailscale Serve, Cloudflare
   Tunnel, or Caddy in front of camweb. The app has no authentication, so use
   one that controls access.
@@ -103,6 +147,7 @@ encoder limits, and prints Markdown for `docs/SPIKE.md`.
 ```
 cmd/camweb/        server entry point
 cmd/fakecam/       fake helper (Go) + testdata/test.h264
+cmd/certgen/       private CA + server certificate for HTTPS (make cert)
 camhelper/         camhelper.py (Picamera2 helper, embedded into camweb), tests, fake/ Picamera2
 internal/proto/    IPC protocol: video framing, JSON-RPC 2.0 types
 internal/helper/   sockets, session, helper process supervisor
@@ -159,6 +204,8 @@ red/blue gains; *Lock current* copies the auto gains (DESIGN.md §3.10).
 ## Troubleshooting
 
 - **"WebCodecs not available"**: see the secure-context section above.
+- **Certificate error in the browser**: either `ca.crt` is not trusted on that
+  device, or the address is not in `CERT_HOSTS` (run `make cert` again).
 - **Overlay shows `helper-restarting` / `error`**: check the log (stderr or
   `journalctl -u camweb`); lines prefixed `[helper]` come from camhelper.py.
   Make sure nothing else uses the camera (`rpicam-*`, another camweb).

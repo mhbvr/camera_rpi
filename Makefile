@@ -1,8 +1,11 @@
 # camera_rpi — see README.md
 BIN := bin
 PI  ?= pi@raspberrypi.local
+# HTTPS: names and IPs the browser uses to reach the Pi (comma-separated).
+CERT_DIR   ?= certs
+CERT_HOSTS ?= raspberrypi.local,raspberrypi,localhost,127.0.0.1
 
-.PHONY: build build-arm64 build-armv7 test vet run-fake run-fake-py deploy clean
+.PHONY: build build-arm64 build-armv7 test vet run-fake run-fake-py deploy deploy-cert cert clean
 
 build:
 	go build -o $(BIN)/camweb ./cmd/camweb
@@ -37,6 +40,15 @@ deploy: build-arm64     # copy the binary and the spike script to the Pi
 	scp spike/m0_spike.py $(PI):camweb/spike/
 	ssh $(PI) mkdir -p camweb/camhelper
 	scp camhelper/camhelper.py $(PI):camweb/camhelper/
+
+# Private CA + server certificate for HTTPS (WebCodecs needs HTTPS off localhost).
+# The CA is created once and reused; install $(CERT_DIR)/ca.crt in your browser/OS.
+#   make cert CERT_HOSTS=raspberrypi.local,192.168.1.50
+cert:
+	go run ./cmd/certgen -dir $(CERT_DIR) -hosts "$(CERT_HOSTS)"
+
+deploy-cert:            # copy the server certificate and key (not the CA key) to the Pi
+	scp $(CERT_DIR)/server.crt $(CERT_DIR)/server.key $(PI):camweb/
 
 clean:
 	rm -f $(BIN)/camweb $(BIN)/fakecam $(BIN)/camweb-arm64 $(BIN)/camweb-armv7
