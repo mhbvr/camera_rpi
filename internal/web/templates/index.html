@@ -11,6 +11,7 @@
   <section class="viewer">
     <div class="video-wrap">
       <canvas id="video" width="1440" height="1080"></canvas>
+      <img id="mjpeg" alt="camera stream (MJPEG fallback)" hidden>
       <div id="stats" class="stats">connecting…</div>
       <div id="overlay" class="overlay">connecting…</div>
     </div>
@@ -22,12 +23,10 @@
       <button id="fullscreen" title="Fullscreen">⛶</button>
     </div>
     <p id="nocodec" class="warning" hidden>
-      This browser cannot decode the stream: WebCodecs is only available on HTTPS or
-      <code>http://localhost</code>. Start camweb with HTTPS
-      (<code>make cert</code>, then <code>-tls-cert server.crt -tls-key server.key</code>,
-      and install <code>ca.crt</code> in your browser), or use an SSH tunnel
-      (<code>ssh -L 8080:localhost:8080 pi@raspberrypi</code>, then open
-      <code>http://localhost:8080</code>).
+      This browser has no WebCodecs (H.264 decoding), so the page shows the
+      <b>MJPEG fallback</b>: more bandwidth and a lower frame rate. Chrome, Edge and
+      Samsung Internet decode H.264 on HTTPS or <code>localhost</code>; Firefox for
+      Android does not support WebCodecs yet. <button type="button" class="info" popovertarget="info-mjpeg" aria-label="About MJPEG fallback">i</button>
     </p>
   </section>
 
@@ -50,6 +49,12 @@
       </label>
       <label>Camera buffers <span class="interrupts">interrupts stream</span>
         <input type="number" data-path="pipeline.buffer_count" min="{{.L.BufferMin}}" max="{{.L.BufferMax}}" step="1">
+      </label>
+      <label>MJPEG fallback bitrate <output data-for="mjpeg.bitrate"></output> Mbit/s <button type="button" class="info" popovertarget="info-mjpeg" aria-label="About MJPEG fallback">i</button>
+        <input type="range" data-path="mjpeg.bitrate" data-scale="1000000" min="{{.MJPEGBitrateMinM}}" max="{{.MJPEGBitrateMaxM}}" step="1">
+      </label>
+      <label>MJPEG fallback: every <output data-for="mjpeg.skip"></output>. camera frame
+        <input type="range" data-path="mjpeg.skip" min="1" max="{{.L.MJPEGSkipMax}}" step="1">
       </label>
     </details>
 
@@ -465,6 +470,25 @@
     press <i>Lock current</i>.</p>
   <p class="muted">Details: docs/DESIGN.md §3.10</p>
   <button type="button" popovertarget="info-wb-gains" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-mjpeg" popover class="popover">
+  <h3>MJPEG fallback</h3>
+  <p>Browsers without WebCodecs (H.264 decoding), such as Firefox for Android,
+    get the stream as <b>MJPEG</b>: a series of complete JPEG pictures that the
+    browser shows in a plain image element. The page switches automatically;
+    add <code>?mjpeg=1</code> to the address to force it.</p>
+  <ul>
+    <li>The Pi runs a second, hardware MJPEG encoder on the same stream, but
+      <b>only while an MJPEG viewer is connected</b>.</li>
+    <li>MJPEG needs several times the bandwidth of H.264: fine on Wi-Fi, heavy on
+      mobile data. Lower the bitrate, or use every 2nd–3rd frame, to reduce it.</li>
+    <li>Latency is low (no buffering); a slow connection skips frames instead
+      of falling behind.</li>
+    <li>It also works over plain HTTP. Settings, capture and actual values work
+      as usual.</li>
+  </ul>
+  <p class="muted">Details: docs/DESIGN.md §5.5</p>
+  <button type="button" popovertarget="info-mjpeg" popovertargetaction="hide">Close</button>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="/static/app.js"></script>

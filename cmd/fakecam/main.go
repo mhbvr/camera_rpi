@@ -41,6 +41,8 @@ type fake struct {
 	params   proto.ConfigureParams
 	controls map[string]any
 	frames   int64
+
+	mjpegStop chan struct{} // non-nil while the fake MJPEG encoder runs
 }
 
 func main() {
@@ -183,6 +185,23 @@ func (f *fake) handle(m *proto.Incoming) (any, *proto.RPCError) {
 			return nil, &proto.RPCError{Code: proto.CodeNotConfigured, Message: "not streaming"}
 		}
 		return f.snapshot(p)
+	case proto.MethodSetMJPEG:
+		var p proto.SetMJPEGParams
+		if err := json.Unmarshal(m.Params, &p); err != nil {
+			return nil, invalid(err.Error())
+		}
+		f.mu.Lock()
+		if f.mjpegStop != nil {
+			close(f.mjpegStop)
+			f.mjpegStop = nil
+		}
+		if p.Enabled {
+			f.mjpegStop = make(chan struct{})
+			go f.mjpegLoop(f.mjpegStop, max(1, p.Skip))
+		}
+		f.mu.Unlock()
+		f.log.Printf("set_mjpeg %+v", p)
+		return map[string]bool{"active": p.Enabled}, nil
 	case proto.MethodStop:
 		f.stopStream("stop")
 		f.notify(proto.NoteState, proto.StateParams{State: "idle"})
@@ -286,6 +305,49 @@ func (f *fake) streamLoop(stop chan struct{}) {
 		f.mu.Lock()
 		f.frames++
 		f.mu.Unlock()
+	}
+}
+
+// mjpegLoop sends JPEG frames of the lores size with a moving bar, at the
+// camera frame rate divided by skip.
+func (f *fake) mjpegLoop(stop chan struct{}, skip int) {
+	f.mu.Lock()
+	size := f.params.Lores.Size
+	fps := f.fps()
+	f.mu.Unlock()
+	if size[0] == 0 {
+		size = proto.Size{1440, 1080}
+	}
+	tick := time.NewTicker(time.Duration(float64(time.Second) * float64(skip) / fps))
+	defer tick.Stop()
+	img := image.NewYCbCr(image.Rect(0, 0, size[0], size[1]), image.YCbCrSubsampleRatio420)
+	for i := range img.Cb {
+		img.Cb[i], img.Cr[i] = 110, 150
+	}
+	var seq uint64
+	for n := 0; ; n++ {
+		select {
+		case <-stop:
+			return
+		case <-tick.C:
+		}
+		bar := (n % 30) * size[0] / 30
+		for y := 0; y < size[1]; y++ {
+			row := img.Y[y*img.YStride : y*img.YStride+size[0]]
+			for x := range row {
+				if x >= bar && x < bar+size[0]/30 {
+					row[x] = 235
+				} else {
+					row[x] = uint8(40 + (x+y)%150)
+				}
+			}
+		}
+		var buf bytes.Buffer
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 60}); err != nil {
+			continue
+		}
+		f.writeVideo(&proto.VideoMsg{Type: proto.VideoJPEG, Seq: seq, WallUS: uint64(time.Now().UnixMicro()), Payload: buf.Bytes()})
+		seq++
 	}
 }
 
@@ -396,6 +458,6 @@ func helloParams() proto.Hello {
 				"FrameDurationLimits": ctl("8333", "667244877", "null"),
 			},
 		},
-		Features: []string{"snapshot", "metadata", "set_encoder"},
+		Features: []string{"snapshot", "metadata", "set_encoder", "mjpeg"},
 	}
 }

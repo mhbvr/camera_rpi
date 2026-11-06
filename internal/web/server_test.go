@@ -1,11 +1,14 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -22,7 +25,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *stream.Hub, *camera.Manager
 	hub := stream.NewHub(8)
 	logger := log.New(io.Discard, "", 0)
 	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger})
-	ts := httptest.NewServer(New(mgr, hub, logger).Handler())
+	ts := httptest.NewServer(New(mgr, hub, nil, logger).Handler())
 	t.Cleanup(ts.Close)
 	return ts, hub, mgr
 }
@@ -31,7 +34,7 @@ func TestStreamOverTLS(t *testing.T) {
 	hub := stream.NewHub(8)
 	logger := log.New(io.Discard, "", 0)
 	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger})
-	ts := httptest.NewUnstartedServer(New(mgr, hub, logger).Handler())
+	ts := httptest.NewUnstartedServer(New(mgr, hub, nil, logger).Handler())
 	ts.Config.ConnContext = ConnContext
 	ts.EnableHTTP2 = true
 	ts.StartTLS()
@@ -141,5 +144,66 @@ func TestStream(t *testing.T) {
 	typ, p = readMsg()
 	if typ != stream.TypeVideo || len(p) != 5 {
 		t.Fatalf("video message type %d len %d", typ, len(p))
+	}
+}
+
+func TestMJPEGEndpoint(t *testing.T) {
+	hub := stream.NewHub(8)
+	frames := stream.NewFrameHub()
+	logger := log.New(io.Discard, "", 0)
+	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger, MJPEG: frames})
+	ts := httptest.NewServer(New(mgr, hub, frames, logger).Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/stream.mjpeg", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	mt, params, err := mime.ParseMediaType(res.Header.Get("Content-Type"))
+	if err != nil || mt != "multipart/x-mixed-replace" {
+		t.Fatalf("content type %q %v", res.Header.Get("Content-Type"), err)
+	}
+	for frames.Viewers() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	jpeg := []byte{0xff, 0xd8, 1, 2, 3, 0xff, 0xd9}
+	frames.Publish(jpeg)
+	part, err := multipart.NewReader(res.Body, params["boundary"]).NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(part)
+	if part.Header.Get("Content-Type") != "image/jpeg" || !bytes.Equal(got, jpeg) {
+		t.Fatalf("part %v %x", part.Header, got)
+	}
+}
+
+func TestStreamEventsOnly(t *testing.T) {
+	ts, hub, _ := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/stream?video=0", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	h := make([]byte, stream.HeaderSize)
+	if _, err := io.ReadFull(res.Body, h); err != nil || h[0] != stream.TypeEvent { // sticky state
+		t.Fatalf("first: %v %d", err, h[0])
+	}
+	if _, err := io.ReadFull(res.Body, make([]byte, binary.BigEndian.Uint32(h[4:8]))); err != nil {
+		t.Fatal(err)
+	}
+	for hub.Viewers() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Flags: proto.FlagKey, Payload: []byte{0, 0, 0, 1, 0x65}}))
+	hub.Publish(stream.NewEvent(map[string]any{"event": "metadata"}))
+	if _, err := io.ReadFull(res.Body, h); err != nil || h[0] != stream.TypeEvent {
+		t.Fatalf("events-only stream delivered type %d (%v)", h[0], err)
 	}
 }

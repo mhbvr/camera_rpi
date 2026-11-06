@@ -193,6 +193,24 @@ class Picamera2:
     def close(self):
         self.stop()
 
+    def _jpeg(self, frame):
+        """A JPEG of the lores size with a moving bar (cached per position)."""
+        import io
+        from PIL import Image
+        w, h = self._cfg["lores"]["size"]
+        key = (w, h, frame % 30)
+        cache = self.__dict__.setdefault("_jpeg_cache", {})
+        if key not in cache:
+            img = np.zeros((h, w, 3), dtype=np.uint8)
+            img[:, :, 0] = np.linspace(40, 200, w, dtype=np.uint8)[None, :]
+            img[:, :, 2] = np.linspace(200, 40, h, dtype=np.uint8)[:, None]
+            x = (frame % 30) * w // 30
+            img[:, x:x + w // 30] = 255
+            buf = io.BytesIO()
+            Image.fromarray(img).save(buf, "JPEG", quality=70)
+            cache[key] = buf.getvalue()
+        return cache[key]
+
     def _loop(self):
         next_t = time.monotonic()
         while self._running:
@@ -205,6 +223,12 @@ class Picamera2:
             if self.post_callback:
                 self.post_callback(req)
             for enc in list(self._encoders):
+                if getattr(enc, "frame_skip_count", None) is not None and type(enc).__name__ == "MJPEGEncoder":
+                    enc.index += 1
+                    if enc.index % max(1, enc.frame_skip_count):
+                        continue
+                    enc.output.outputframe(self._jpeg(self._frame), True, time.monotonic_ns() // 1000)
+                    continue
                 au = self._aus[enc.index % len(self._aus)]
                 enc.index += 1
                 key = b"\x00\x00\x01\x65" in au or b"\x00\x00\x01\x25" in au or b"\x00\x00\x01\x45" in au

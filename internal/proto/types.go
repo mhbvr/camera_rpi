@@ -11,6 +11,7 @@ const (
 	MethodSetControls = "set_controls"
 	MethodSetEncoder  = "set_encoder"
 	MethodSnapshot    = "snapshot"
+	MethodSetMJPEG    = "set_mjpeg"
 	MethodStop        = "stop"
 	MethodShutdown    = "shutdown"
 )
@@ -138,6 +139,13 @@ type SetEncoderParams struct {
 // SetEncoderResult is the result of "set_encoder".
 type SetEncoderResult struct {
 	Session int `json:"session"`
+}
+
+// SetMJPEGParams are the params of "set_mjpeg" (MJPEG fallback encoder).
+type SetMJPEGParams struct {
+	Enabled bool `json:"enabled"`
+	Bitrate int  `json:"bitrate"`
+	Skip    int  `json:"skip"` // encode every skip-th frame
 }
 
 // SnapshotParams are the params of "snapshot".

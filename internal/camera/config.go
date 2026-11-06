@@ -35,6 +35,9 @@ var Limits = struct {
 	SharpnessMax                 float64
 	WBGainMin, WBGainMax         float64
 	QualityMin, QualityMax       int
+	MJPEGBitrateMin              int
+	MJPEGBitrateMax              int
+	MJPEGSkipMax                 int
 }{
 	FPSMin: 1, FPSMax: 40,
 	BitrateMin: 250_000, BitrateMax: 25_000_000,
@@ -48,6 +51,8 @@ var Limits = struct {
 	SharpnessMax: 16,
 	WBGainMin:    0.1, WBGainMax: 32,
 	QualityMin: 1, QualityMax: 100,
+	MJPEGBitrateMin: 1_000_000, MJPEGBitrateMax: 40_000_000,
+	MJPEGSkipMax: 10,
 }
 
 // Allowed enum values (our names).
@@ -65,6 +70,13 @@ type Config struct {
 	Encoder  Encoder  `json:"encoder"`  // needs encoder restart
 	Controls Controls `json:"controls"` // live
 	Still    Still    `json:"still"`    // per capture
+	MJPEG    MJPEG    `json:"mjpeg"`    // fallback encoder, only while MJPEG viewers watch
+}
+
+// MJPEG configures the fallback stream for browsers without WebCodecs.
+type MJPEG struct {
+	Bitrate int `json:"bitrate"` // bps requested from the hardware MJPEG encoder
+	Skip    int `json:"skip"`    // encode every Skip-th camera frame (2 = half the frame rate)
 }
 
 // Pipeline settings require reconfiguring the camera.
@@ -116,6 +128,7 @@ func Defaults() Config {
 			Contrast: 1, Saturation: 1, Sharpness: 1, Denoise: "auto",
 		},
 		Still: Still{Quality: 95},
+		MJPEG: MJPEG{Bitrate: 8_000_000, Skip: 2},
 	}
 }
 
@@ -171,6 +184,8 @@ func Validate(c Config, hello *proto.Hello) error {
 		oneOf("controls.awb_mode", c.Controls.AWBMode, AWBModes),
 		oneOf("controls.denoise", c.Controls.Denoise, DenoiseModes),
 		rangeI("still.quality", c.Still.Quality, L.QualityMin, L.QualityMax),
+		rangeI("mjpeg.bitrate", c.MJPEG.Bitrate, L.MJPEGBitrateMin, L.MJPEGBitrateMax),
+		rangeI("mjpeg.skip", c.MJPEG.Skip, 1, L.MJPEGSkipMax),
 	}
 	for _, err := range checks {
 		if err != nil {

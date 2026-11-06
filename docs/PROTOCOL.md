@@ -178,6 +178,19 @@ Rules:
 - The `path` comes from the server only (never from a browser client).
 - If not streaming → `-32002 not_configured`.
 
+#### `set_mjpeg`
+Starts or stops the MJPEG fallback encoder (a second, hardware encoder on the
+same `lores` stream, DESIGN.md §5.5). It keeps running across `configure`
+(restarted with the pipeline) until disabled. Frames arrive on `video.sock` as
+type 4.
+```json
+{"jsonrpc":"2.0","id":6,"method":"set_mjpeg","params":{"enabled":true,"bitrate":8000000,"skip":2}}
+→ {"jsonrpc":"2.0","id":6,"result":{"active":true}}
+```
+`skip` = encode every skip-th camera frame (Picamera2 `frame_skip_count`).
+`active` is false when the camera is not streaming (the encoder then starts
+with the next `configure`).
+
 #### `stop`
 Stops streaming and returns to idle (the camera stays open). No params; result `{}`.
 
@@ -206,7 +219,7 @@ No params. Respond with `{}`, release the camera, exit 0.
       "...": {}
     }
   },
-  "features": ["snapshot", "metadata", "set_encoder"]
+  "features": ["snapshot", "metadata", "set_encoder", "mjpeg"]
 }}
 ```
 The values above are illustrative. The helper reports what libcamera says.
@@ -221,7 +234,7 @@ payload:
 ```
 offset size field
 0      4    payload length (u32)
-4      1    type          1 = H.264 access unit, 2 = stream_start (JSON), 3 = stream_end (JSON)
+4      1    type          1 = H.264 access unit, 2 = stream_start (JSON), 3 = stream_end (JSON), 4 = JPEG frame
 5      1    flags         bit0 keyframe (IDR), bit1 contains SPS/PPS
 6      2    reserved (0)
 8      8    seq           u64 frame counter, reset to 0 at each stream_start
@@ -238,6 +251,9 @@ offset size field
   Sent whenever the encoder (re)starts. The server resets all viewers to
   "wait for keyframe".
 - **type 3 (stream_end):** JSON `{"session": 3, "reason": "reconfigure"|"encoder"|"stop"|"error"}`.
+- **type 4 (JPEG frame):** one complete JPEG from the MJPEG fallback encoder
+  (only while enabled with `set_mjpeg`). `seq` counts JPEG frames; `pts_us` is
+  the encoder timestamp.
 
 ### Flow control
 - **No helper-side queue**: the encoder output callback writes each AU
@@ -269,4 +285,4 @@ offset size field
   `frame_release {"slot":n}` (this would be the first server → helper
   notification). For processing (OpenCV and similar) without
   copying.
-- `capture_burst`, `start_recording` (to a file on the Pi), MJPEG codec.
+- `capture_burst`, `start_recording` (to a file on the Pi).

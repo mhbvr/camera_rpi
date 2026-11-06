@@ -1,12 +1,15 @@
 // Low-latency H.264 player: fetch('/stream') → 16-byte framed messages →
 // WebCodecs VideoDecoder → <canvas>. See docs/DESIGN.md §5.
+// MJPEG fallback (browsers without WebCodecs, DESIGN.md §5.5): an <img>
+// shows /stream.mjpeg, and /stream?video=0 still delivers the events.
 const HEADER = 16;
 const T_VIDEO = 1, T_EVENT = 2;
 const F_KEY = 1, F_CONFIG = 2;
 
 export class Player {
-  constructor(canvas, { onEvent = () => {}, onStatus = () => {}, onStats = () => {} } = {}) {
+  constructor(canvas, { onEvent = () => {}, onStatus = () => {}, onStats = () => {}, mjpegImg = null } = {}) {
     this.canvas = canvas;
+    this.mjpegImg = mjpegImg; // set: MJPEG fallback mode
     this.ctx = canvas.getContext('2d');
     this.onEvent = onEvent;
     this.onStatus = onStatus;
@@ -21,12 +24,14 @@ export class Player {
     this.dropped = 0;
     this.width = 0;
     this.height = 0;
-    this.decoder_supported = 'VideoDecoder' in window;
+    this.decoder_supported = !mjpegImg && 'VideoDecoder' in window;
     setInterval(() => this.reportStats(), 1000);
   }
 
   async run() {
-    for (;;) {
+    if (this.mjpegImg) this.startMJPEG();
+    for (let attempt = 0; ; attempt++) {
+      if (attempt > 0 && this.mjpegImg) this.loadMJPEG(); // server may have restarted
       try {
         await this.readStream();
         this.onStatus('stream ended');
@@ -38,8 +43,26 @@ export class Player {
     }
   }
 
+  // MJPEG fallback: the browser decodes multipart JPEG in an <img> natively.
+  startMJPEG() {
+    const img = this.mjpegImg;
+    img.hidden = false;
+    this.canvas.hidden = true;
+    img.addEventListener('error', () => {
+      this.onStatus('MJPEG reconnecting');
+      setTimeout(() => this.loadMJPEG(), 2000);
+    });
+    img.addEventListener('load', () => this.onStatus('connected'));
+    this.loadMJPEG();
+  }
+
+  loadMJPEG() {
+    this.mjpegImg.src = '/stream.mjpeg?t=' + Date.now();
+  }
+
   async readStream() {
-    const res = await fetch('/stream', { cache: 'no-store' });
+    // In MJPEG mode only the events are needed from /stream.
+    const res = await fetch(this.mjpegImg ? '/stream?video=0' : '/stream', { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     this.onStatus('connected');
     const reader = res.body.getReader();
@@ -143,6 +166,10 @@ export class Player {
   }
 
   reportStats() {
+    if (this.mjpegImg) {
+      this.onStats({ mjpeg: true, width: this.mjpegImg.naturalWidth, height: this.mjpegImg.naturalHeight });
+      return;
+    }
     this.onStats({ fps: this.frames, kbps: (this.bytes * 8) / 1000, width: this.width, height: this.height, dropped: this.dropped, codec: this.codec });
     this.frames = 0;
     this.bytes = 0;

@@ -109,6 +109,20 @@ and repeat steps 2–3.
   Tunnel, or Caddy in front of camweb. The app has no authentication, so use
   one that controls access.
 
+## Browsers without WebCodecs (Firefox for Android)
+
+Firefox for Android does not support WebCodecs yet, and Mozilla has not
+announced a date. On such browsers the page switches automatically to an
+**MJPEG fallback**:
+- The Pi runs a second, hardware MJPEG encoder, only while an MJPEG viewer is
+  connected.
+- It works over plain HTTP too, and settings, capture and readouts work as
+  usual.
+- It uses several times the bandwidth of H.264. To reduce it, lower *MJPEG
+  fallback bitrate* or use every 2nd–3rd frame (Stream section).
+- Add `?mjpeg=1` to the address to force the fallback in any browser.
+- Chrome, Edge and Samsung Internet on Android decode H.264 (on HTTPS).
+
 ## Development without a Pi
 
 ```bash

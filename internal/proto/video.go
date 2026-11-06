@@ -21,6 +21,7 @@ const (
 	VideoAU          uint8 = 1 // one H.264 access unit, Annex-B
 	VideoStreamStart uint8 = 2 // JSON StreamStart
 	VideoStreamEnd   uint8 = 3 // JSON StreamEnd
+	VideoJPEG        uint8 = 4 // one complete JPEG (MJPEG fallback)
 )
 
 // Video message flags.
