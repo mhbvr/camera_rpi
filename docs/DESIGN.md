@@ -801,13 +801,17 @@ codec), `metadata` (2 Hz), `drop` (frames dropped for this viewer).
 - If the stream ends or fails, it reconnects every **2 s** (fixed interval).
   It keeps running in hidden tabs.
 
-### 5.5 MJPEG fallback (browsers without WebCodecs)
+### 5.5 MJPEG fallback (browsers that cannot decode H.264 with WebCodecs)
 
 **Why:** Firefox for Android has no WebCodecs. MDN's compatibility data lists
 `VideoDecoder` as unsupported there ([VideoDecoder.json](https://github.com/mdn/browser-compat-data/blob/main/api/VideoDecoder.json)).
 Mozilla's tracking bug says *"Android support is all that's left here, which
 we're working on currently"*, but sets no milestone
 ([bug 1746557](https://bugzilla.mozilla.org/show_bug.cgi?id=1746557)).
+In practice (tested on a phone, 2026-11) Firefox for Android on HTTPS does
+expose `VideoDecoder`, but decoding our H.264 fails with *"operation not
+supported"* (a `NotSupportedError`). So checking for `VideoDecoder` is not
+enough; the page must also detect a decoder that fails.
 
 **How:**
 - **Helper:** Picamera2 can run several encoders on the same stream. The
@@ -826,7 +830,15 @@ we're working on currently"*, but sets no milestone
   - `GET /stream.mjpeg` serves `multipart/x-mixed-replace`.
 - **Browser:**
   - If `VideoDecoder` is missing (or with `?mjpeg=1`), the page shows an
-    `<img src="/stream.mjpeg">` instead of the canvas.
+    `<img src="/stream.mjpeg">` instead of the canvas from the start.
+  - Otherwise it starts with H.264 and switches to MJPEG in place when the
+    decoder cannot work, before it has decoded any frame:
+    `VideoDecoder.isConfigSupported()` says no for the stream's codec string,
+    `configure()` throws, the decoder reports a `NotSupportedError`, or it
+    fails 3 times. Failures after the first decoded frame only reset the
+    decoder, as before (§5.4).
+  - The note under the video gives the reason (no WebCodecs, needs HTTPS, or
+    the decoder's error message).
   - It still opens `GET /stream?video=0`, which sends events only (state,
     metadata, stats), no H.264, so the readouts and overlays keep working.
   - Settings and Capture are unchanged.

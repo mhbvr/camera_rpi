@@ -23,10 +23,11 @@
       <button id="fullscreen" title="Fullscreen">⛶</button>
     </div>
     <p id="nocodec" class="warning" hidden>
-      This browser has no WebCodecs (H.264 decoding), so the page shows the
-      <b>MJPEG fallback</b>: more bandwidth and a lower frame rate. Chrome, Edge and
-      Samsung Internet decode H.264 on HTTPS or <code>localhost</code>; Firefox for
-      Android does not support WebCodecs yet. <button type="button" class="info" popovertarget="info-mjpeg" aria-label="About MJPEG fallback">i</button>
+      This browser cannot play the H.264 stream (<span id="nocodec-reason"></span>),
+      so the page shows the <b>MJPEG fallback</b>: more bandwidth and a lower frame
+      rate. Chrome, Edge and Samsung Internet decode H.264 on HTTPS or
+      <code>localhost</code>; Firefox for Android does not decode H.264 with
+      WebCodecs yet. <button type="button" class="info" popovertarget="info-mjpeg" aria-label="About MJPEG fallback">i</button>
     </p>
   </section>
 
@@ -473,10 +474,11 @@
 </div>
 <div id="info-mjpeg" popover class="popover">
   <h3>MJPEG fallback</h3>
-  <p>Browsers without WebCodecs (H.264 decoding), such as Firefox for Android,
-    get the stream as <b>MJPEG</b>: a series of complete JPEG pictures that the
-    browser shows in a plain image element. The page switches automatically;
-    add <code>?mjpeg=1</code> to the address to force it.</p>
+  <p>Browsers that cannot decode H.264 with WebCodecs get the stream as
+    <b>MJPEG</b>: a series of complete JPEG pictures that the browser shows in a
+    plain image element. The page switches automatically, also when the browser
+    has a decoder that then fails (Firefox for Android: "operation not
+    supported"). Add <code>?mjpeg=1</code> to the address to force it.</p>
   <ul>
     <li>The Pi runs a second, hardware MJPEG encoder on the same stream, but
       <b>only while an MJPEG viewer is connected</b>.</li>

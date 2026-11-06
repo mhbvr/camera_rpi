@@ -1,15 +1,25 @@
 // Low-latency H.264 player: fetch('/stream') → 16-byte framed messages →
 // WebCodecs VideoDecoder → <canvas>. See docs/DESIGN.md §5.
-// MJPEG fallback (browsers without WebCodecs, DESIGN.md §5.5): an <img>
-// shows /stream.mjpeg, and /stream?video=0 still delivers the events.
+// MJPEG fallback (DESIGN.md §5.5): an <img> shows /stream.mjpeg, and
+// /stream?video=0 still delivers the events. Used from the start when the
+// browser has no VideoDecoder (mjpegImg), or switched to at runtime when the
+// decoder exists but cannot decode the stream (fallbackImg), as on Firefox
+// for Android: VideoDecoder is there, H.264 fails with NotSupportedError.
 const HEADER = 16;
 const T_VIDEO = 1, T_EVENT = 2;
 const F_KEY = 1, F_CONFIG = 2;
+const MAX_EARLY_FAILURES = 3; // decoder failures before any frame → fallback
 
 export class Player {
-  constructor(canvas, { onEvent = () => {}, onStatus = () => {}, onStats = () => {}, mjpegImg = null } = {}) {
+  constructor(canvas, { onEvent = () => {}, onStatus = () => {}, onStats = () => {}, onFallback = () => {}, mjpegImg = null, fallbackImg = null } = {}) {
     this.canvas = canvas;
     this.mjpegImg = mjpegImg; // set: MJPEG fallback mode
+    this.fallbackImg = fallbackImg; // switch to MJPEG here if H.264 decoding fails
+    this.onFallback = onFallback;
+    this.reader = null;
+    this.reconnectNow = false;
+    this.decodedTotal = 0; // frames decoded since page load
+    this.earlyFailures = 0; // decoder failures while decodedTotal == 0
     this.ctx = canvas.getContext('2d');
     this.onEvent = onEvent;
     this.onStatus = onStatus;
@@ -34,11 +44,16 @@ export class Player {
       if (attempt > 0 && this.mjpegImg) this.loadMJPEG(); // server may have restarted
       try {
         await this.readStream();
-        this.onStatus('stream ended');
+        if (!this.reconnectNow) this.onStatus('stream ended');
       } catch (e) {
-        this.onStatus('reconnecting: ' + e.message);
+        if (!this.reconnectNow) this.onStatus('reconnecting: ' + e.message);
       }
       this.resetDecoder();
+      if (this.reconnectNow) { // switched to MJPEG: reopen /stream?video=0 now
+        this.reconnectNow = false;
+        attempt = -1;
+        continue;
+      }
       await new Promise((r) => setTimeout(r, 2000)); // fixed 2 s retry
     }
   }
@@ -60,12 +75,40 @@ export class Player {
     this.mjpegImg.src = '/stream.mjpeg?t=' + Date.now();
   }
 
+  // fallback switches to MJPEG in place: the H.264 decoder does not work in
+  // this browser even though VideoDecoder exists.
+  fallback(reason) {
+    if (this.mjpegImg || !this.fallbackImg) return;
+    this.resetDecoder();
+    this.decoder_supported = false;
+    this.mjpegImg = this.fallbackImg;
+    this.onFallback(reason);
+    this.startMJPEG();
+    // Reconnect /stream without video, so the server stops sending H.264.
+    this.reconnectNow = true;
+    if (this.reader) this.reader.cancel().catch(() => {});
+  }
+
+  // decoderFailed counts decoder failures before the first decoded frame. A
+  // NotSupportedError, or repeated failures, means this browser cannot decode
+  // the stream at all.
+  decoderFailed(e) {
+    this.onStatus('decoder: ' + e.message);
+    this.resetDecoder();
+    if (this.decodedTotal > 0) return;
+    this.earlyFailures++;
+    if (e.name === 'NotSupportedError' || this.earlyFailures >= MAX_EARLY_FAILURES) {
+      this.fallback(e.message || e.name);
+    }
+  }
+
   async readStream() {
     // In MJPEG mode only the events are needed from /stream.
     const res = await fetch(this.mjpegImg ? '/stream?video=0' : '/stream', { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     this.onStatus('connected');
     const reader = res.body.getReader();
+    this.reader = reader;
     let buf = new Uint8Array(0);
     for (;;) {
       const { value, done } = await reader.read();
@@ -105,8 +148,7 @@ export class Player {
     try {
       this.decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, data: payload }));
     } catch (e) {
-      this.onStatus('decode error: ' + e.message);
-      this.resetDecoder();
+      this.decoderFailed(e);
     }
   }
 
@@ -118,16 +160,30 @@ export class Player {
     this.resetDecoder();
     this.spsKey = k;
     const codec = 'avc1.' + [sps[1], sps[2], sps[3]].map((b) => b.toString(16).padStart(2, '0')).join('');
-    this.decoder = new VideoDecoder({
+    const decoder = new VideoDecoder({
       output: (frame) => this.onFrame(frame),
-      error: (e) => { this.onStatus('decoder: ' + e.message); this.resetDecoder(); },
+      error: (e) => { if (this.decoder === decoder) this.decoderFailed(e); },
     });
+    this.decoder = decoder;
     // No `description`: chunks are Annex-B. hardwareAcceleration is left at
     // its default: Chrome treats 'prefer-hardware' as hardware-only and fails
     // on machines without a hardware H.264 decoder; the default still uses
     // hardware when available.
-    this.decoder.configure({ codec, optimizeForLatency: true });
+    const cfg = { codec, optimizeForLatency: true };
+    try {
+      decoder.configure(cfg);
+    } catch (e) {
+      this.decoderFailed(e);
+      return;
+    }
     this.codec = codec;
+    // Ask early whether this config can be decoded at all; an unsupported
+    // config otherwise only shows up as a NotSupportedError on the decoder.
+    if (this.decodedTotal === 0 && VideoDecoder.isConfigSupported) {
+      VideoDecoder.isConfigSupported(cfg).then((r) => {
+        if (!r.supported && this.decodedTotal === 0) this.fallback('H.264 ' + codec + ' not supported');
+      }).catch(() => {});
+    }
     this.needKey = true;
   }
 
@@ -141,6 +197,7 @@ export class Player {
   }
 
   onFrame(frame) {
+    this.decodedTotal++;
     if (this.pending) this.pending.close(); // only the newest frame is drawn
     this.pending = frame;
     if (!this.drawScheduled) {

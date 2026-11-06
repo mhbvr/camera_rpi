@@ -215,3 +215,24 @@ lores stream.
   setting is re-sent after a frame-rate change.
 - **Follow-up:** re-run `python3 spike/m0_spike.py mjpeg`. Rows marked
   "compensated" should deliver the requested bitrate.
+
+## 0.10 Re-run: MJPEG bitrate compensation (2026-11-06 22:02)
+
+Same setup. Rows marked "compensated" hand the encoder
+`bitrate × 30 / MJPEG fps`, as the helper now does.
+
+| MJPEG | H.264 fps | H.264 drops | MJPEG fps | MJPEG Mbit/s | MJPEG KB/frame | CPU % |
+|---|---|---|---|---|---|---|
+| none (H.264 only) | 29.8 | 0 | – | – | – | 22 |
+| 8 M, every 2. | 29.8 | 0 | 14.8 | 4.16 | 35 | 27 |
+| 4 M, every 2., compensated | 29.8 | 0 | 14.8 | 4.16 | 35 | 27 |
+| 8 M, every 2., compensated | 29.8 | 0 | 14.8 | 8.76 | 74 | 27 |
+| 8 M, every 1., compensated | 29.8 | 0 | 29.8 | 8.39 | 35 | 28 |
+| 4 M, every 3., compensated | 29.8 | 0 | 10.0 | 3.64 | 45 | 25 |
+
+**Verdict:**
+- **Compensation works:** delivered bitrate is within about ±10 % of the
+  request (4 → 4.16, +4 %; 8 → 8.76, +10 %; 8 → 8.39, +5 %; 4 → 3.64, −9 %),
+  against −48 % uncompensated (8 M every 2nd → 4.16).
+- **H.264 is still unaffected:** 29.8 fps, 0 drops, at most +6 % CPU.
+- Spike 0.10 is closed.

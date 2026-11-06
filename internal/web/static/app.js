@@ -273,13 +273,22 @@ function setOverlay(text) {
   overlay.hidden = !text;
 }
 
-// MJPEG fallback when the browser has no WebCodecs (e.g. Firefox for
-// Android) or when forced with ?mjpeg=1.
+// MJPEG fallback when the browser has no WebCodecs, when its decoder cannot
+// decode the stream (Firefox for Android: VideoDecoder exists but H.264
+// fails), or when forced with ?mjpeg=1.
 const forceMJPEG = new URLSearchParams(location.search).has('mjpeg');
 const useMJPEG = forceMJPEG || !('VideoDecoder' in window);
+function showNoCodec(reason) {
+  $('#nocodec-reason').textContent = reason;
+  $('#nocodec').hidden = false;
+}
 
 const player = new Player($('#video'), {
   mjpegImg: useMJPEG ? $('#mjpeg') : null,
+  fallbackImg: $('#mjpeg'),
+  onFallback(reason) {
+    showNoCodec('its H.264 decoder failed: ' + reason);
+  },
   onEvent(ev) {
     if (ev.event === 'state') setOverlay(ev.state === 'streaming' ? '' : ev.state + (ev.detail ? ': ' + ev.detail : ''));
     else if (ev.event === 'metadata') showMeta(ev.data);
@@ -306,7 +315,9 @@ const player = new Player($('#video'), {
   },
 });
 
-if (useMJPEG && !forceMJPEG) $('#nocodec').hidden = false;
+if (useMJPEG && !forceMJPEG) {
+  showNoCodec(window.isSecureContext ? 'it has no WebCodecs' : 'WebCodecs needs HTTPS or localhost');
+}
 
 fetch('/api/config').then((r) => r.json()).then(render).catch((e) => toast(e.message, true));
 player.run();
