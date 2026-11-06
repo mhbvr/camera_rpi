@@ -159,3 +159,27 @@ reduce the first stage.
   including at 15 fps).
 - Check `spike_out/*.jpg` for aspect ratio.
 - Measure glass-to-glass latency with camweb.
+
+---
+
+## 0.9 Re-run: bitrate compensation (2026-11-06 18:57)
+
+| fps | compensated | requested | delivered fps | Mbit/s | CPU % |
+|---|---|---|---|---|---|
+| 30 | no | 6 M | 29.8 | 6.15 | 22 |
+| 40 | no | 6 M | 39.8 | 7.99 | 42 |
+| 40 | yes | 6 M | 40.2 | 6.04 | 43 |
+| 40 | yes | 2 M | 40.0 | 2.00 | 43 |
+| 40 | yes | 12 M | 40.0 | 12.02 | 43 |
+| 15 | no | 6 M | 15.0 | 3.07 | 11 |
+| 15 | yes | 6 M | 15.0 | 6.29 | 11 |
+
+**Verdict: the compensation works.** Compensated rows deliver the requested
+bitrate at 40 fps (within 1 %) and at 15 fps (+5 %). That deviation is
+comparable to the uncompensated 30 fps row (+2.5 %), i.e. normal rate-control
+and measurement spread; about six keyframes fall in the 6 s window.
+Uncompensated rows again match requested × fps / 30. CPU depends on frame rate,
+not bitrate (≈ 11 / 22 / 43 % at 15 / 30 / 40 fps). 0.9 is closed.
+
+Remaining follow-ups: aspect check of `spike_out/*.jpg`; glass-to-glass
+latency with camweb.
