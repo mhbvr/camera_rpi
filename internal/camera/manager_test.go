@@ -291,6 +291,20 @@ func TestManagerMJPEG(t *testing.T) {
 	if _, _, err := m.Apply(ctx, []byte(`{"mjpeg":{"skip":0}}`)); err == nil {
 		t.Fatal("skip 0 accepted")
 	}
+	// a frame-rate change re-sends set_mjpeg (the helper compensates the bitrate for fps)
+	n := f.count()
+	if _, _, err := m.Apply(ctx, []byte(`{"controls":{"fps":20}}`)); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	resent := false
+	for _, c := range f.calls[n:] {
+		resent = resent || c.Method == proto.MethodSetMJPEG
+	}
+	f.mu.Unlock()
+	if !resent {
+		t.Fatal("fps change did not re-send set_mjpeg")
+	}
 
 	frames.Unsubscribe(sub) // last viewer gone → encoder off
 	waitFor(t, func() bool { p, _ := lastMJPEG(); return !p.Enabled })

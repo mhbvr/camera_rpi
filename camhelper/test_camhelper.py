@@ -122,6 +122,8 @@ class FramingTest(unittest.TestCase):
         self.assertEqual(camhelper.encoder_bitrate(6_000_000, 40), 4_500_000)
         self.assertEqual(camhelper.encoder_bitrate(6_000_000, 15), 12_000_000)
         self.assertEqual(camhelper.encoder_bitrate(20_000_000, 10), camhelper.MAX_ENCODER_BITRATE)
+        # MJPEG at 30 fps, every 2nd frame -> 15 fps: request 8 Mbit/s, encoder gets 16
+        self.assertEqual(camhelper.encoder_bitrate(8_000_000, 30 / 2), 16_000_000)
 
     def test_has_sps(self):
         self.assertTrue(camhelper.has_sps(b"\x00\x00\x00\x01\x67\x64\x00\x28\x00\x00\x01\x68"))

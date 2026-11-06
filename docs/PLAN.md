@@ -25,7 +25,7 @@ M4 Polish                       ─┘  backpressure tuning, systemd unit, READM
 | M1 IPC + stream | done | Go tests (race detector), fakecam + headless Chromium decodes and renders 1440×1080@30; helper `kill -9` → recovers in ~1 s | glass-to-glass latency, CPU |
 | M2 config + live controls | done | Go tests; real `camhelper.py` on fake Picamera2: live controls, encoder restart, reconfigure | that controls take effect on the real camera (auto/manual exposure semantics, M0 0.7) |
 | M3 snapshot | done | 2028×1520 JPEG via both the Go fake and `camhelper.py` (Pillow and simplejpeg paths, colour round-trip test) | no video gap during capture (M0 0.4/0.5) |
-| M4 polish | systemd unit, README, HTTPS (`make cert`), MJPEG fallback | MJPEG fallback with the real helper on the fake Picamera2 (headless Chromium without WebCodecs) | backpressure tuning over a real link; spike 0.10 (H.264 + MJPEG load) |
+| M4 polish | systemd unit, README, HTTPS (`make cert`), MJPEG fallback | MJPEG fallback with the real helper on the fake Picamera2 (headless Chromium without WebCodecs) | backpressure tuning over a real link; spike 0.10 done (no H.264 drops, +5 % CPU), re-run to confirm MJPEG bitrate compensation |
 
 Additions not in the original plan: `camhelper/fake/` (a fake Picamera2 so the
 real helper runs in CI) and `camhelper/test_camhelper.py`.

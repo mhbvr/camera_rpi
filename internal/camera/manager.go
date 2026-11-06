@@ -299,8 +299,11 @@ func (m *Manager) applyLocked(ctx context.Context, old, next Config) (ApplyKind,
 	m.mu.Lock()
 	m.cfg = next
 	m.mu.Unlock()
-	if sess != nil && old.MJPEG != next.MJPEG && m.wantMJPEG() {
-		m.syncMJPEGLocked(ctx) // restart the fallback encoder with the new settings
+	// Restart the fallback encoder with new settings, or after a frame-rate
+	// change (its bitrate is compensated for the frame rate in the helper).
+	if sess != nil && m.wantMJPEG() &&
+		(old.MJPEG != next.MJPEG || FrameDurationUS(old.Controls) != FrameDurationUS(next.Controls)) {
+		m.syncMJPEGLocked(ctx)
 	}
 	if err := SaveConfig(m.opt.ConfigPath, next); err != nil {
 		m.opt.Log.Printf("camera: saving config: %v", err)

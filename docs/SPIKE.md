@@ -183,3 +183,35 @@ not bitrate (≈ 11 / 22 / 43 % at 15 / 30 / 40 fps). 0.9 is closed.
 
 Remaining follow-ups: aspect check of `spike_out/*.jpg`; glass-to-glass
 latency with camweb.
+
+---
+
+## 0.10 MJPEG fallback in parallel with H.264 (2026-11-06 21:54)
+
+H.264 1440x1080@30 at 6 Mbit/s, plus a hardware `MJPEGEncoder` on the same
+lores stream.
+
+| MJPEG | H.264 fps | H.264 drops | MJPEG fps | MJPEG Mbit/s | MJPEG KB/frame | CPU % |
+|---|---|---|---|---|---|---|
+| none (H.264 only) | 29.8 | 0 | – | – | – | 22 |
+| 4 M, every 2. | 29.8 | 0 | 14.8 | 3.00 | 25 | 27 |
+| 8 M, every 2. | 29.8 | 0 | 14.8 | 4.12 | 35 | 26 |
+| 16 M, every 2. | 29.8 | 0 | 14.8 | 8.40 | 71 | 27 |
+| 8 M, every 1. | 29.8 | 0 | 29.8 | 8.12 | 34 | 28 |
+| 16 M, every 1. | 29.8 | 0 | 29.8 | 16.65 | 70 | 28 |
+
+**Verdict:**
+- **H.264 is unaffected:** 29.8 fps and 0 dropped frames in every case.
+- **Pi load is small:** about +5 % CPU (encoding is done in hardware). The
+  Pi 4 runs both encoders comfortably.
+- **`frame_skip_count` works:** every 2nd frame gives exactly half the frame
+  rate.
+- **Bitrate follows the H.264 quirk:** the MJPEG encoder budgets bits per
+  frame assuming 30 fps. With every frame, delivered ≈ requested; with every
+  2nd frame, about half (8 → 4.1, 16 → 8.4). 4 M every 2nd delivered 3.0
+  instead of 2: a quality floor at small sizes.
+- **Fixed:** the helper now hands the encoder `bitrate × 30 / MJPEG fps`
+  (capped at 25 Mbit/s), so `mjpeg.bitrate` is the delivered bitrate. The
+  setting is re-sent after a frame-rate change.
+- **Follow-up:** re-run `python3 spike/m0_spike.py mjpeg`. Rows marked
+  "compensated" should deliver the requested bitrate.
