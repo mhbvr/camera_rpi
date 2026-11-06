@@ -74,10 +74,13 @@ Related documents:
 
   | Sensor mode | Max fps | Use |
   |---|---|---|
-  | 1332×990 10-bit | 120 | high fps, cropped FOV |
-  | 2028×1080 12-bit | 50 | 16:9, cropped FOV |
-  | 2028×1520 12-bit (2×2 binned) | 40 | **default: 4:3 full FOV** |
-  | 4056×3040 12-bit | 10 | full-res stills (not used at this stage) |
+  | 1332×990 12-bit | 101.7 | high fps, cropped FOV |
+  | 2028×1080 12-bit | 62.8 | 16:9, cropped FOV |
+  | 2028×1520 12-bit (2×2 binned) | 45.2 | **default: 4:3 full FOV** (used at ≤ 40 fps) |
+  | 4056×3040 12-bit | 11.7 | full-res stills (not used at this stage) |
+
+  Measured values (M0 spike). The driver also offers 8- and 10-bit variants of
+  each mode with higher frame rates.
 
 - **Hardware H.264 encoder**: max 1920×1080 (level 4.2). The Pi 4 also has a
   hardware MJPEG encoder. Still JPEG encoding is **in software** (Picamera2
@@ -180,8 +183,8 @@ keyframe. The H.264 profile is fixed at `high`. Flips come from startup flags
 
 | Change | Mechanism | Stream impact |
 |---|---|---|
-| Exposure (auto/manual, shutter, gain, EV, metering, mode), AWB (mode, manual gains), brightness, contrast, saturation, sharpness, noise reduction, **fps within the mode** (`FrameDurationLimits`) | `set_controls` (live) | **none**, takes effect a few frames later |
-| Bitrate, GOP | restart the encoder only | new IDR, a gap of tens of ms (to measure) |
+| Exposure (auto/manual, shutter, gain, EV, metering, mode), AWB (mode, manual gains), brightness, contrast, saturation, sharpness, noise reduction | `set_controls` (live) | **none**, takes effect after ~10 frames with 6 buffers (M0 0.7) |
+| Bitrate, GOP, **frame rate** (also a manual shutter longer than the frame time) | `set_controls` if needed, then restart the encoder | new IDR, short gap. The frame rate needs an encoder restart because the encoder's rate control must know it (M0 0.9) |
 | Stream size | reconfigure inside the helper (stop → configure → start) | short gap, a few hundred ms expected (to measure) |
 | Helper crash | Go restarts the helper | about 1–3 s (process and camera init) |
 
@@ -404,7 +407,9 @@ type Still struct {
 ```
 - Ranges and defaults come from the helper's `hello` (libcamera
   `camera_controls` gives min/max/default for each control), plus Go-side
-  sanity limits.
+  sanity limits. Note (M0): `camera_controls` reflects the last configured
+  sensor mode, so mode-dependent ranges such as `FrameDurationLimits` in
+  `hello` are not used; only the ExposureTime/AnalogueGain maxima are.
 - Mapping to libcamera control names lives **only in Go**
   (`internal/camera/controls.go`).
 - The config is saved to `<data>/config.json` and applied after each `hello`
@@ -474,9 +479,9 @@ camera_rpi/
 
 | Stage | Estimate |
 |---|---|
-| Sensor exposure and readout | ~33 ms (less at higher fps) |
-| ISP and HW H.264 encode | 10–20 ms |
-| Helper hand-off (Python callback, socket write) | < 1–2 ms (to measure; GIL contention from JPEG encoding is a risk) |
+| Sensor exposure, readout, ISP (sensor timestamp → request complete) | **40 ms measured** (33 ms exposure, dark scene; less with shorter exposures) |
+| HW H.264 encode | to measure (spike re-run reports sensor → encoder callback) |
+| Helper hand-off (Python callback, socket write) | socket 0.4 ms measured; snapshot JPEG encoding adds up to ~11 ms jitter (p95) |
 | Go hub and HTTP write | ~1 ms |
 | Network | LAN 1–5 ms; internet RTT/2 plus I-frame serialisation |
 | Browser HW decode | 5–15 ms |
@@ -489,7 +494,7 @@ camera_rpi/
 
 | Risk | Mitigation |
 |---|---|
-| Python GIL: a JPEG encode of a 3 MP frame (software, ~0.1–0.2 s?) stalls the encoder output thread (which writes the video socket directly) and adds jitter | measure in M0; encode in a separate **process** (`multiprocessing`) if needed, or use the HW MJPEG encoder for snapshots |
+| Python GIL: a JPEG encode of a 3 MP frame stalls the encoder output thread (which writes the video socket directly) and adds jitter | **measured (M0 0.5):** encode 95 ms, callback interval p95 35 → 46 ms, no dropped frames. Accepted; encoding stays in a thread |
 | No helper-side queue: if Go stops reading `video.sock`, the encoder output thread blocks and the camera pipeline stalls | Go reads `video.sock` in a dedicated goroutine that only hands messages to the non-blocking hub; 1 MiB `SO_SNDBUF` absorbs short hiccups. Add a queue back if M1 shows stalls |
 | Picamera2 API differences between versions (`Output.outputframe` signature, encoder args) | pin a minimum version in `hello`; use `*args, **kwargs` in the output adapter |
 | TCP latency build-up over the internet | drop-to-keyframe, small send buffer; WebRTC as the upgrade path |

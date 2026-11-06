@@ -228,11 +228,13 @@ const (
 )
 
 // Diff returns the most disruptive kind of change between old and new.
+// A frame-rate change restarts the encoder too, because its rate control
+// needs the frame rate (M0 spike 0.9: bitrate +33 % at 40 fps otherwise).
 func Diff(old, new Config) ApplyKind {
 	switch {
 	case old.Pipeline != new.Pipeline:
 		return ApplyReconfigure
-	case old.Encoder != new.Encoder:
+	case old.Encoder != new.Encoder || FrameDurationUS(old.Controls) != FrameDurationUS(new.Controls):
 		return ApplyEncoder
 	case old.Controls != new.Controls:
 		return ApplyLive

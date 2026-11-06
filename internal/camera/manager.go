@@ -243,19 +243,20 @@ func (m *Manager) callApply(ctx context.Context, sess *helper.Session, hello *pr
 	case ApplyReconfigure:
 		var res proto.ConfigureResult
 		return sess.Call(ctx, proto.MethodConfigure, ConfigureParams(next, hello, m.opt.HFlip, m.opt.VFlip), &res)
-	case ApplyEncoder:
-		var res proto.SetEncoderResult
-		err := sess.Call(ctx, proto.MethodSetEncoder, proto.SetEncoderParams{Bitrate: next.Encoder.Bitrate, IPeriod: next.Encoder.GOP}, &res)
-		if err != nil || old.Controls == next.Controls {
-			return err
-		}
-		fallthrough
-	case ApplyLive:
+	case ApplyEncoder, ApplyLive:
+		// Controls first (they may change the frame rate), then the encoder.
 		changed := ChangedControls(ControlMap(old.Controls, hello), ControlMap(next.Controls, hello))
-		if len(changed) == 0 {
-			return nil
+		if len(changed) > 0 {
+			if err := sess.Call(ctx, proto.MethodSetControls, proto.SetControlsParams{Controls: changed}, nil); err != nil {
+				return err
+			}
 		}
-		return sess.Call(ctx, proto.MethodSetControls, proto.SetControlsParams{Controls: changed}, nil)
+		if kind == ApplyEncoder {
+			var res proto.SetEncoderResult
+			return sess.Call(ctx, proto.MethodSetEncoder, proto.SetEncoderParams{
+				Bitrate: next.Encoder.Bitrate, IPeriod: next.Encoder.GOP, FrameRate: EncoderFrameRate(next.Controls),
+			}, &res)
+		}
 	}
 	return nil
 }

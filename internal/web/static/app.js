@@ -5,6 +5,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 let config = null;
 let lastMeta = null;
+let camLatency = null; // helper: sensor timestamp -> socket write, ms
 let focusPeak = 0;
 
 // ---------- helpers ----------
@@ -203,6 +204,7 @@ const player = new Player($('#video'), {
   onEvent(ev) {
     if (ev.event === 'state') setOverlay(ev.state === 'streaming' ? '' : ev.state + (ev.detail ? ': ' + ev.detail : ''));
     else if (ev.event === 'metadata') showMeta(ev.data);
+    else if (ev.event === 'stats') camLatency = ev.data?.latency_ms ?? null;
     else if (ev.event === 'error') toast('Camera error: ' + JSON.stringify(ev.data), true);
   },
   onStatus(s) {
@@ -210,7 +212,8 @@ const player = new Player($('#video'), {
   },
   onStats(s) {
     $('#stats').textContent = s.width
-      ? `${s.width}×${s.height} · ${s.fps} fps · ${Math.round(s.kbps)} kbit/s · dropped ${s.dropped}`
+      ? `${s.width}×${s.height} · ${s.fps} fps · ${Math.round(s.kbps)} kbit/s · dropped ${s.dropped}` +
+        (camLatency != null ? ` · camera ${Math.round(camLatency)} ms` : '')
       : `${Math.round(s.kbps)} kbit/s · waiting for keyframe`;
   },
 });

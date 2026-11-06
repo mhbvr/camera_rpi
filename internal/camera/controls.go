@@ -50,6 +50,11 @@ func FrameDurationUS(c Controls) int {
 	return d
 }
 
+// EncoderFrameRate is the frame rate passed to the encoder's rate control.
+func EncoderFrameRate(c Controls) float64 {
+	return math.Round(1e9/float64(FrameDurationUS(c))) / 1000
+}
+
 // ControlMap converts Controls to libcamera controls. When hello reports a
 // control list, controls the camera does not support are left out.
 //
@@ -147,7 +152,7 @@ func ConfigureParams(c Config, hello *proto.Hello, hflip, vflip bool) proto.Conf
 		Transform:   proto.Transform{HFlip: hflip, VFlip: vflip},
 		BufferCount: c.Pipeline.BufferCount,
 		Controls:    ControlMap(c.Controls, hello),
-		Encoder:     proto.EncoderCfg{Codec: "h264", Bitrate: c.Encoder.Bitrate, IPeriod: c.Encoder.GOP},
+		Encoder:     proto.EncoderCfg{Codec: "h264", Bitrate: c.Encoder.Bitrate, IPeriod: c.Encoder.GOP, FrameRate: EncoderFrameRate(c.Controls)},
 		MetadataHz:  2,
 	}
 }

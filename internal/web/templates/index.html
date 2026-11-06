@@ -38,7 +38,7 @@
           {{range .StreamSizes}}<option value="{{index . 0}}x{{index . 1}}">{{index . 0}}×{{index . 1}}</option>{{end}}
         </select>
       </label>
-      <label>Frame rate <output data-for="controls.fps"></output> fps
+      <label>Frame rate <output data-for="controls.fps"></output> fps <span class="interrupts">interrupts stream</span>
         <input type="range" data-path="controls.fps" min="{{.L.FPSMin}}" max="{{.L.FPSMax}}" step="1">
       </label>
       <label>Bitrate <output data-for="encoder.bitrate"></output> Mbit/s <span class="interrupts">interrupts stream</span>
