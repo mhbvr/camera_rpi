@@ -109,11 +109,13 @@ and repeat steps 2–3.
   Tunnel, or Caddy in front of camweb. The app has no authentication, so use
   one that controls access.
 
-## Browsers without WebCodecs (Firefox for Android)
+## Browsers that cannot decode H.264 (Firefox for Android)
 
-Firefox for Android does not support WebCodecs yet, and Mozilla has not
-announced a date. On such browsers the page switches automatically to an
-**MJPEG fallback**:
+Firefox for Android does not decode H.264 with WebCodecs yet, and Mozilla has
+not announced a date. On HTTPS it does have a `VideoDecoder`, but it fails
+with "operation not supported". When the browser has no decoder, or its
+decoder fails before showing a frame, the page switches automatically to an
+**MJPEG fallback** (the note under the video says why):
 - The Pi runs a second, hardware MJPEG encoder, only while an MJPEG viewer is
   connected.
 - It works over plain HTTP too, and settings, capture and readouts work as
