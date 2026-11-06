@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi Camera</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="layout">
+  <section class="viewer">
+    <div class="video-wrap">
+      <canvas id="video" width="1440" height="1080"></canvas>
+      <div id="stats" class="stats">connecting…</div>
+      <div id="overlay" class="overlay">connecting…</div>
+    </div>
+    <div class="toolbar">
+      <button id="capture" class="primary" title="Shortcut: c">📷 Capture</button>
+      <label class="inline">JPEG quality
+        <input type="number" data-path="still.quality" min="{{.L.QualityMin}}" max="{{.L.QualityMax}}" step="1">
+      </label>
+      <button id="fullscreen" title="Fullscreen">⛶</button>
+    </div>
+    <p id="nocodec" class="warning" hidden>
+      This browser cannot decode the stream: WebCodecs is only available on HTTPS or
+      <code>http://localhost</code>. Use an SSH tunnel
+      (<code>ssh -L 8080:localhost:8080 pi@raspberrypi</code>, then open
+      <code>http://localhost:8080</code>), or in Chrome/Edge add this address under
+      <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>.
+    </p>
+  </section>
+
+  <aside class="panel">
+    <details open>
+      <summary>Stream</summary>
+      <label>Stream size <span class="interrupts">interrupts stream</span>
+        <select data-path="pipeline.stream_size" data-kind="size">
+          {{range .StreamSizes}}<option value="{{index . 0}}x{{index . 1}}">{{index . 0}}×{{index . 1}}</option>{{end}}
+        </select>
+      </label>
+      <label>Frame rate <output data-for="controls.fps"></output> fps
+        <input type="range" data-path="controls.fps" min="{{.L.FPSMin}}" max="{{.L.FPSMax}}" step="1">
+      </label>
+      <label>Bitrate <output data-for="encoder.bitrate"></output> Mbit/s <span class="interrupts">interrupts stream</span>
+        <input type="range" data-path="encoder.bitrate" data-scale="1000000" min="{{.BitrateMinM}}" max="{{.BitrateMaxM}}" step="0.25">
+      </label>
+      <label>Keyframe interval (frames) <span class="interrupts">interrupts stream</span>
+        <input type="number" data-path="encoder.gop" min="{{.L.GOPMin}}" max="{{.L.GOPMax}}" step="1">
+      </label>
+      <label>Camera buffers <span class="interrupts">interrupts stream</span>
+        <input type="number" data-path="pipeline.buffer_count" min="{{.L.BufferMin}}" max="{{.L.BufferMax}}" step="1">
+      </label>
+    </details>
+
+    <details open>
+      <summary>Exposure</summary>
+      <label class="check"><input type="checkbox" data-path="controls.auto_exposure"> Auto exposure</label>
+      <label>Shutter <output data-for="controls.shutter_us"></output>
+        <input type="range" data-path="controls.shutter_us" data-log data-min="{{.L.ShutterMin}}" data-max="{{.L.ShutterMax}}" min="0" max="1000" step="1" class="manual-exp">
+      </label>
+      <label>Gain <output data-for="controls.gain"></output>
+        <input type="range" data-path="controls.gain" min="{{.L.GainMin}}" max="{{.L.GainMax}}" step="0.1" class="manual-exp">
+      </label>
+      <label>EV compensation <output data-for="controls.ev"></output>
+        <input type="range" data-path="controls.ev" min="{{.L.EVMin}}" max="{{.L.EVMax}}" step="0.1" class="auto-exp">
+      </label>
+      <label>Metering
+        <select data-path="controls.metering" class="auto-exp">{{range .Metering}}<option>{{.}}</option>{{end}}</select>
+      </label>
+      <label>Exposure mode
+        <select data-path="controls.exposure_mode" class="auto-exp">{{range .ExposureModes}}<option>{{.}}</option>{{end}}</select>
+      </label>
+      <div class="readout">
+        <div>Shutter <b id="md-shutter">–</b></div>
+        <div>Gain <b id="md-gain">–</b></div>
+        <div>Colour temp. <b id="md-ct">–</b></div>
+        <div>Lux <b id="md-lux">–</b></div>
+      </div>
+      <button id="lock" title="Copy the current automatic values into manual settings">Lock current</button>
+      <div class="focus" title="Focus figure of merit: turn the focus ring to maximise it. Click to reset the peak.">
+        <span>Focus</span>
+        <div class="bar"><div id="focus-bar"></div><div id="focus-peak"></div></div>
+        <b id="focus-val">–</b>
+      </div>
+    </details>
+
+    <details open>
+      <summary>White balance</summary>
+      <label class="check"><input type="checkbox" data-path="controls.auto_wb"> Auto white balance</label>
+      <label>Mode
+        <select data-path="controls.awb_mode" class="auto-wb">{{range .AWBModes}}<option>{{.}}</option>{{end}}</select>
+      </label>
+      <label>Red gain <output data-for="controls.wb_gain_r"></output>
+        <input type="range" data-path="controls.wb_gain_r" min="{{.L.WBGainMin}}" max="8" step="0.05" class="manual-wb">
+      </label>
+      <label>Blue gain <output data-for="controls.wb_gain_b"></output>
+        <input type="range" data-path="controls.wb_gain_b" min="{{.L.WBGainMin}}" max="8" step="0.05" class="manual-wb">
+      </label>
+    </details>
+
+    <details>
+      <summary>Image</summary>
+      <label>Brightness <output data-for="controls.brightness"></output>
+        <input type="range" data-path="controls.brightness" min="{{.L.BrightnessMin}}" max="{{.L.BrightnessMax}}" step="0.05">
+      </label>
+      <label>Contrast <output data-for="controls.contrast"></output>
+        <input type="range" data-path="controls.contrast" min="0" max="{{.ContrastMax}}" step="0.05">
+      </label>
+      <label>Saturation <output data-for="controls.saturation"></output>
+        <input type="range" data-path="controls.saturation" min="0" max="{{.SaturationMax}}" step="0.05">
+      </label>
+      <label>Sharpness <output data-for="controls.sharpness"></output>
+        <input type="range" data-path="controls.sharpness" min="0" max="{{.SharpnessMax}}" step="0.1">
+      </label>
+      <label>Denoise
+        <select data-path="controls.denoise">{{range .DenoiseModes}}<option>{{.}}</option>{{end}}</select>
+      </label>
+    </details>
+
+    <button id="reset">Reset to defaults</button>
+  </aside>
+</main>
+<div id="toast" class="toast" hidden></div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

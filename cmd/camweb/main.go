@@ -1,0 +1,153 @@
+// Command camweb serves a low-latency web UI for a Raspberry Pi camera. It
+// runs the camera helper (camhelper.py, Picamera2) and talks to it over Unix
+// sockets (docs/PROTOCOL.md).
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/mhbvr/camera_rpi/camhelper"
+	"github.com/mhbvr/camera_rpi/internal/camera"
+	"github.com/mhbvr/camera_rpi/internal/helper"
+	"github.com/mhbvr/camera_rpi/internal/stream"
+	"github.com/mhbvr/camera_rpi/internal/web"
+)
+
+func main() {
+	var (
+		listen     = flag.String("listen", ":8080", "HTTP listen address")
+		dataDir    = flag.String("data", "./data", "data directory (config.json, captures/)")
+		runtimeDir = flag.String("runtime-dir", "", "directory for the helper sockets (default $XDG_RUNTIME_DIR/camweb or <data>/run)")
+		mode       = flag.String("helper", "spawn", "spawn: start and supervise the helper; external: only listen for one")
+		helperCmd  = flag.String("helper-cmd", "", "helper command (default: python3 <embedded camhelper.py>); --ctl/--video are appended")
+		python     = flag.String("python", "python3", "Python interpreter for the embedded helper")
+		hflip      = flag.Bool("hflip", false, "flip the image horizontally")
+		vflip      = flag.Bool("vflip", false, "flip the image vertically (with -hflip: rotate 180°)")
+	)
+	flag.Parse()
+	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds)
+
+	if *runtimeDir == "" {
+		if x := os.Getenv("XDG_RUNTIME_DIR"); x != "" {
+			*runtimeDir = filepath.Join(x, "camweb")
+		} else {
+			*runtimeDir = filepath.Join(*dataDir, "run")
+		}
+	}
+	if err := os.MkdirAll(*dataDir, 0o755); err != nil {
+		logger.Fatal(err)
+	}
+	cfgPath := filepath.Join(*dataDir, "config.json")
+	cfg, err := camera.LoadConfig(cfgPath)
+	if err != nil {
+		logger.Printf("config: %v (using defaults)", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	hub := stream.NewHub(30)
+	mgr := camera.NewManager(cfg, hub, camera.Options{
+		ConfigPath:  cfgPath,
+		CapturesDir: filepath.Join(*dataDir, "captures"),
+		HFlip:       *hflip,
+		VFlip:       *vflip,
+		Log:         logger,
+	})
+
+	lis, err := helper.Listen(*runtimeDir, logger)
+	if err != nil {
+		logger.Fatal(err)
+	}
+	defer lis.Close()
+	logger.Printf("helper sockets: %s, %s", lis.CtlPath(), lis.VideoPath())
+
+	var sup *helper.Supervisor
+	switch *mode {
+	case "spawn":
+		args, err := helperArgs(*helperCmd, *python, *runtimeDir)
+		if err != nil {
+			logger.Fatal(err)
+		}
+		args = append(args, "--ctl", lis.CtlPath(), "--video", lis.VideoPath())
+		sup = &helper.Supervisor{Args: args, Log: logger}
+		go sup.Run(ctx)
+	case "external":
+		logger.Printf("waiting for an external helper")
+	default:
+		logger.Fatalf("unknown -helper mode %q", *mode)
+	}
+
+	// Session loop: one helper at a time.
+	sessionsDone := make(chan struct{})
+	go func() {
+		defer close(sessionsDone)
+		for {
+			sess, err := lis.Accept(ctx, mgr.OnVideo)
+			if err != nil {
+				return
+			}
+			logger.Printf("helper connected")
+			err = mgr.RunSession(ctx, sess)
+			logger.Printf("helper session ended: %v", err)
+			if ctx.Err() != nil {
+				mgr.Shutdown(context.Background())
+				sess.Close()
+				return
+			}
+			sess.Close()
+			if sup != nil {
+				sup.Kill() // the supervisor restarts it
+			}
+		}
+	}()
+
+	srv := &http.Server{
+		Addr:              *listen,
+		Handler:           web.New(mgr, hub, logger).Handler(),
+		ConnContext:       web.ConnContext,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		logger.Printf("listening on %s", *listen)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Fatal(err)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Printf("shutting down")
+	hub.Close() // ends /stream responses
+	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(sctx)
+	select {
+	case <-sessionsDone:
+	case <-sctx.Done():
+	}
+}
+
+// helperArgs returns the helper command line without the socket arguments.
+func helperArgs(cmd, python, runtimeDir string) ([]string, error) {
+	if cmd != "" {
+		return strings.Fields(cmd), nil
+	}
+	script := filepath.Join(runtimeDir, "camhelper.py")
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(script, camhelper.Script, 0o644); err != nil {
+		return nil, err
+	}
+	return []string{python, script}, nil
+}

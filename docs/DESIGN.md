@@ -347,8 +347,11 @@ codec), `metadata` (2 Hz), `drop` (frames dropped for this viewer).
 ### 5.4 Browser player (`player.js`, vanilla)
 - `fetch('/stream')`, then `getReader()`, then parse headers. On an SPS change,
   `VideoDecoder.configure({codec: 'avc1.PPCCLL' from SPS, optimizeForLatency:
-  true, hardwareAcceleration: 'prefer-hardware'})`. No `description` is passed,
-  so chunks are Annex-B.
+  true})`. No `description` is passed, so chunks are Annex-B.
+  `hardwareAcceleration` is left at its default: Chrome treats
+  `'prefer-hardware'` as hardware-only and fails on machines without a
+  hardware H.264 decoder (found during implementation); the default still uses
+  hardware when available.
 - Only the newest decoded frame is drawn, on `requestAnimationFrame`; older
   frames are closed.
 - No latency estimate in the browser: latency is measured glass-to-glass by
@@ -448,9 +451,11 @@ camera_rpi/
 ├── cmd/
 │   ├── camweb/main.go              server entry point
 │   └── fakecam/main.go             fake helper (speaks PROTOCOL.md, plays a .h264 file) for dev/CI
-├── helper/
+├── camhelper/
 │   ├── camhelper.py                Picamera2 helper (embedded into the Go binary)
-│   └── embed.go                    //go:embed camhelper.py
+│   ├── embed.go                    //go:embed camhelper.py
+│   ├── test_camhelper.py           Python unit tests (no camera needed)
+│   └── fake/                       fake picamera2 + libcamera to run camhelper.py without a Pi
 ├── internal/
 │   ├── proto/                      PROTOCOL.md types: framing, messages (shared by server, fakecam, tests)
 │   ├── helper/                     listener, session (ctl RPC + video reader), supervisor (spawn/restart)
@@ -458,6 +463,7 @@ camera_rpi/
 │   ├── stream/                     Hub, per-viewer queues, browser wire format
 │   ├── h264/                       NAL type scan, SPS → codec string (small)
 │   └── web/                        server, handlers, templates/, static/
+├── spike/m0_spike.py               M0 hardware spike (run on the Pi)
 ├── deploy/camweb.service
 └── docs/{DESIGN.md, PROTOCOL.md, PLAN.md}
 ```

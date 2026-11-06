@@ -17,6 +17,21 @@ M4 Polish                       ─┘  backpressure tuning, systemd unit, READM
 
 ---
 
+## Status
+
+| Milestone | Code | Verified here (no Pi) | Needs the Pi |
+|---|---|---|---|
+| M0 spike | `spike/m0_spike.py` | runs against the fake Picamera2 | **run it** and save the output as `docs/SPIKE.md` |
+| M1 IPC + stream | done | Go tests (race detector), fakecam + headless Chromium decodes and renders 1440×1080@30; helper `kill -9` → recovers in ~1 s | glass-to-glass latency, CPU |
+| M2 config + live controls | done | Go tests; real `camhelper.py` on fake Picamera2: live controls, encoder restart, reconfigure | that controls take effect on the real camera (auto/manual exposure semantics, M0 0.7) |
+| M3 snapshot | done | 2028×1520 JPEG via both the Go fake and `camhelper.py` (Pillow and simplejpeg paths, colour round-trip test) | no video gap during capture (M0 0.4/0.5) |
+| M4 polish | systemd unit, README | — | backpressure tuning over a real link |
+
+Additions not in the original plan: `camhelper/fake/` (a fake Picamera2 so the
+real helper runs in CI) and `camhelper/test_camhelper.py`.
+
+---
+
 ## M0 — Hardware spike (on the Pi 4 + HQ camera) — M
 
 Goal: check the assumptions in DESIGN.md before writing production code.
@@ -87,7 +102,7 @@ spawned, supervised and auto-restarted. Everything also runs without a Pi using
      SIGTERM/SIGKILL on server stop. External mode: no spawning.
    - Tests use an in-process fake helper (goroutine speaking the protocol over
      real sockets in `t.TempDir()`).
-4. **`helper/camhelper.py` v1** (L): see "Helper internals" below.
+4. **`camhelper/camhelper.py` v1** (L): see "Helper internals" below.
    JSON-RPC methods: `configure` (fixed or param-driven), `stop`, `shutdown`;
    notifications: `hello`, `state`, `stats`; video: `stream_start`, AUs.
 5. **`cmd/fakecam`** (M): Go implementation of the helper side for dev/CI.
