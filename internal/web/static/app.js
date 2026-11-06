@@ -67,8 +67,10 @@ function updateEnabled() {
 
 function render(cfg) {
   config = cfg;
+  fillAwbInfo();
   describeProfile();
   describeDenoise();
+  describeAwb();
   fillCameraInfo();
   $$('[data-path]').forEach((el) => {
     setField(el, getPath(cfg, el.dataset.path));
@@ -247,6 +249,52 @@ function meteringMaps(modes, selected) {
   }).join('');
 }
 
+// ---------- white balance (docs/DESIGN.md §3.10) ----------
+function awbTuning() {
+  return camera?.tuning?.awb ?? null;
+}
+
+// Interpolates the calibrated CT curve [K, r, b] at temperature k.
+function ctPoint(curve, k) {
+  if (k <= curve[0][0]) return curve[0];
+  for (let i = 1; i < curve.length; i++) {
+    const [k1, r1, b1] = curve[i - 1], [k2, r2, b2] = curve[i];
+    if (k <= k2) {
+      const f = (k - k1) / (k2 - k1);
+      return [k, r1 + f * (r2 - r1), b1 + f * (b2 - b1)];
+    }
+  }
+  return curve.at(-1);
+}
+
+function fillAwbInfo() {
+  const a = awbTuning();
+  if (!a) return;
+  const fill = (key, html) => $$(`[data-fill="${key}"]`).forEach((e) => (e.innerHTML = html));
+  const sel = config?.controls?.awb_mode;
+  const order = ['auto', 'incandescent', 'tungsten', 'fluorescent', 'indoor', 'daylight', 'cloudy'];
+  const names = Object.keys(a.modes || {}).sort((x, y) => (order.indexOf(x) + 1 || 99) - (order.indexOf(y) + 1 || 99));
+  fill('awb-modes', `<table><tr><th>mode</th><th>colour temperature range</th></tr>${names.map((n) =>
+    `<tr${n === sel ? ' class="selected"' : ''}><td>${n}</td><td>${a.modes[n][0]} – ${a.modes[n][1]} K</td></tr>`).join('')}</table>`);
+  const curve = a.ct_curve || [];
+  if (curve.length >= 2) {
+    const rows = [2700, 3200, 4000, 5000, 5600, 6500, 7500].map((k) => {
+      const [, r, b] = ctPoint(curve, k);
+      return `<tr><td>${k} K</td><td>${(a.sensitivity_r / r).toFixed(2)}</td><td>${(a.sensitivity_b / b).toFixed(2)}</td></tr>`;
+    });
+    fill('awb-gain-table', `<table><tr><th>light</th><th>red gain</th><th>blue gain</th></tr>${rows.join('')}</table>
+      <p class="muted">2700 K household bulb · 3200 K halogen · 4000 K cool LED/fluorescent · 5600 K daylight · 6500 K overcast. Calibration range ${curve[0][0]}–${curve.at(-1)[0]} K.</p>`);
+  }
+}
+
+function describeAwb() {
+  const el = $('#awb-desc');
+  if (!el || !config) return;
+  const a = awbTuning();
+  const m = a?.modes?.[config.controls.awb_mode];
+  el.textContent = m ? `${config.controls.awb_mode}: chooses a colour temperature between ${m[0]} and ${m[1]} K.` : '';
+}
+
 // Denoise settings -> what the Pi 4 ISP does (libcamera vc4.cpp DenoiseModeTable).
 const DENOISE_DESC = {
   auto: 'Spatial denoise + fast colour denoise (Picamera2 video default).',
@@ -323,6 +371,8 @@ const player = new Player($('#video'), {
     else if (ev.event === 'camera') {
       camera = ev;
       fillCameraInfo();
+      fillAwbInfo();
+      describeAwb();
       describeProfile();
     }
     else if (ev.event === 'error') toast('Camera error: ' + JSON.stringify(ev.data), true);

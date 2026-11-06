@@ -573,6 +573,23 @@ def read_tuning(model):
                            for k, v in (ch.get("metering_modes") or {}).items()},
         "y_target": list(ch.get("y_target") or []),
         "max_digital_gain": float(ch.get("max_digital_gain", 4.0)),
+        "awb": _awb_tuning(Picamera2, tuning),
+    }
+
+
+def _awb_tuning(Picamera2, tuning):
+    """rpi.awb data for the UI: mode CT ranges, the calibrated CT curve
+    (ct, r, b) and the gain sensitivities (DESIGN.md §3.10)."""
+    try:
+        awb = Picamera2.find_tuning_algo(tuning, "rpi.awb")
+    except Exception:  # noqa: BLE001
+        return None
+    ct = list(awb.get("ct_curve") or [])
+    return {
+        "modes": {k: [v.get("lo"), v.get("hi")] for k, v in (awb.get("modes") or {}).items()},
+        "ct_curve": [ct[i:i + 3] for i in range(0, len(ct) - 2, 3)],
+        "sensitivity_r": float(awb.get("sensitivity_r", 1.0)),
+        "sensitivity_b": float(awb.get("sensitivity_b", 1.0)),
     }
 
 

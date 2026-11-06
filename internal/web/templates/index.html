@@ -82,7 +82,7 @@
         <div>Frame time <b id="md-frame">–</b></div>
         <div>AE state <b id="md-aestate">–</b></div>
         <div><span>Lux <button type="button" class="info" popovertarget="info-lux" aria-label="About the lux value">i</button></span> <b id="md-lux">–</b></div>
-        <div>Colour temp. <b id="md-ct">–</b></div>
+        <div><span>Colour temp. <button type="button" class="info" popovertarget="info-wb" aria-label="About white balance">i</button></span> <b id="md-ct">–</b></div>
       </div>
       <div id="ae-limit" class="warning small" hidden></div>
       <button id="lock" title="Copy the current automatic values into manual settings">Lock current</button>
@@ -116,14 +116,18 @@
 
     <details open>
       <summary>White balance</summary>
-      <label class="check"><input type="checkbox" data-path="controls.auto_wb"> Auto white balance</label>
-      <label>Mode
+      <div class="row">
+        <label class="check"><input type="checkbox" data-path="controls.auto_wb"> Auto white balance</label>
+        <button type="button" class="info" popovertarget="info-wb" aria-label="About white balance">i</button>
+      </div>
+      <label>Mode <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-awb-mode" aria-label="About white balance modes">i</button>
         <select data-path="controls.awb_mode" class="auto-wb">{{range .AWBModes}}<option>{{.}}</option>{{end}}</select>
       </label>
-      <label>Red gain <output data-for="controls.wb_gain_r"></output>
+      <p id="awb-desc" class="hint"></p>
+      <label>Red gain <span class="mode-note">manual</span> <output data-for="controls.wb_gain_r"></output> <button type="button" class="info" popovertarget="info-wb-gains" aria-label="About manual colour gains">i</button>
         <input type="range" data-path="controls.wb_gain_r" min="{{.L.WBGainMin}}" max="8" step="0.05" class="manual-wb">
       </label>
-      <label>Blue gain <output data-for="controls.wb_gain_b"></output>
+      <label>Blue gain <span class="mode-note">manual</span> <output data-for="controls.wb_gain_b"></output> <button type="button" class="info" popovertarget="info-wb-gains" aria-label="About manual colour gains">i</button>
         <input type="range" data-path="controls.wb_gain_b" min="{{.L.WBGainMin}}" max="8" step="0.05" class="manual-wb">
       </label>
     </details>
@@ -395,6 +399,55 @@
   <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L293-L325" target="_blank" rel="noopener">mode mapping</a> ·
     <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L454-L490" target="_blank" rel="noopener">ISP setup</a> · docs/DESIGN.md §3.9</p>
   <button type="button" popovertarget="info-denoise" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-wb" popover class="popover">
+  <h3>White balance</h3>
+  <p>Makes neutral (grey/white) objects look neutral under different light. It
+    multiplies the red and blue channels by <b>colour gains</b> (green stays at
+    1). The colour-correction matrix and saturation are then chosen for the
+    resulting colour temperature.</p>
+  <p><b>Auto</b> (libcamera <code>rpi.awb</code>, Bayesian search):</p>
+  <ul>
+    <li>The image is split into 16 × 12 zones; zones that are too dark or have
+      too few pixels are ignored.</li>
+    <li>For colour temperatures across the selected <i>mode's</i> range, it checks
+      how grey the zones would become with the gains calibrated for that
+      temperature, and adds a <b>prior</b>: how likely that light is at the
+      current <i>lux</i> level (dim → warm indoor light, bright → daylight).</li>
+    <li>It then refines slightly off the calibrated curve to allow green/magenta
+      tints, and moves towards the result smoothly over a few seconds.</li>
+  </ul>
+  <p><b>Manual:</b> the red and blue gains are used as set; the colour
+    temperature is estimated back from them.</p>
+  <p><i>Colour temp.</i> in Actual values is the temperature libcamera is
+    using now. A large uniform coloured area (a red wall) can fool auto white
+    balance; then use a fixed mode, or <i>Lock current</i> while a neutral
+    scene is in view.</p>
+  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L241-L285" target="_blank" rel="noopener">search</a> ·
+    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L45-L76" target="_blank" rel="noopener">priors</a> · docs/DESIGN.md §3.10</p>
+  <button type="button" popovertarget="info-wb" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-awb-mode" popover class="popover">
+  <h3>White balance modes (auto only)</h3>
+  <p>A mode limits the <b>range of colour temperatures</b> auto white balance may
+    choose. A narrow range (e.g. <i>daylight</i>) keeps colours stable when the
+    scene content would otherwise mislead it.</p>
+  <div data-fill="awb-modes">Mode ranges not available (no tuning data from the camera).</div>
+  <p class="muted">Read at startup from the camera's tuning file. Details: docs/DESIGN.md §3.10</p>
+  <button type="button" popovertarget="info-awb-mode" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-wb-gains" popover class="popover">
+  <h3>Manual colour gains</h3>
+  <p>Used when auto white balance is off. Each value multiplies its channel
+    relative to green (1.0). Raise <b>red</b> if the image is too blue/cyan, and
+    raise <b>blue</b> if it is too yellow/orange.</p>
+  <p>Gains that make a grey object neutral for a given light, from the
+    camera's calibration:</p>
+  <div data-fill="awb-gain-table">Calibration data not available (no tuning data from the camera).</div>
+  <p>The easiest way to set them: point at a neutral scene in auto mode, then
+    press <i>Lock current</i>.</p>
+  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L209-L230" target="_blank" rel="noopener">how manual gains are applied</a> · docs/DESIGN.md §3.10</p>
+  <button type="button" popovertarget="info-wb-gains" popovertargetaction="hide">Close</button>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="/static/app.js"></script>

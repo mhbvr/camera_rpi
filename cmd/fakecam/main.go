@@ -411,6 +411,13 @@ func helloParams() proto.Hello {
 			},
 			YTarget:        []float64{0, 0.16, 1000, 0.165, 10000, 0.17},
 			MaxDigitalGain: 4,
+			AWB: &proto.AWBTuning{
+				Modes: map[string][2]float64{"auto": {2500, 8000}, "incandescent": {2500, 3000}, "tungsten": {3000, 3500},
+					"fluorescent": {4000, 4700}, "indoor": {3000, 5000}, "daylight": {5500, 6500}, "cloudy": {7000, 8600}},
+				CTCurve: [][3]float64{{2360, 0.6009, 0.3093}, {2848, 0.5071, 0.4}, {3628, 0.4261, 0.5564}, {4660, 0.3529, 0.68},
+					{5579, 0.3227, 0.7}, {6671, 0.3065, 0.72}, {7763, 0.295, 0.74}, {9505, 0.2524, 0.7856}},
+				SensitivityR: 1.05, SensitivityB: 1.05,
+			},
 		},
 	}
 }

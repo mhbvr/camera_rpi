@@ -559,6 +559,87 @@ How the denoise blocks are driven:
   section has an overview popup.
 - A line under the denoise select says what the selected mode switches on.
 
+
+### 3.10 White balance
+
+White balance multiplies the red and blue channels by **colour gains** (green =
+1) so that neutral objects come out neutral. The colour-correction matrix
+(§3.9) is then chosen for the resulting colour temperature. Links:
+[raspberrypi/libcamera @ 9fe1678](https://github.com/raspberrypi/libcamera/tree/9fe1678b8ad5fbae875942b55b58ade23014194c).
+
+**Auto (`rpi.awb`, Bayesian search):**
+1. **Statistics** come from **16 × 12 zones**
+   ([controller.cpp#L38](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/controller.cpp#L38)).
+   Zones with fewer than 16 pixels counted or a green level below 32 are
+   ignored ([awb_bayes.cpp#L134-L135](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L134-L135),
+   [awb.cpp#L373-L407](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L373-L407)).
+2. **Coarse search:** for colour temperatures from the mode's `lo` to `hi`,
+   it takes the calibrated r/b for that temperature from `ct_curve` and computes
+   how far the zones would be from grey (squared deviations, each capped at
+   0.2) ([awb.cpp#L409-L425](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L409-L425)). It subtracts
+   the **prior** log-likelihood of that temperature at the current lux level
+   and keeps the best
+   ([awb_bayes.cpp#L241-L285](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L241-L285); priors
+   interpolated by lux at [#L215-L239](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L215-L239)).
+3. **Fine search:** around the best point, including small steps off the curve
+   (`transverse_pos` 0.0238, `transverse_neg` 0.0443) to allow green/magenta
+   tints such as fluorescent light
+   ([#L287-L367](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L287-L367)).
+4. **Output:** gains = `sensitivity` (1.05) / r and / b
+   ([#L369-L413](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L369-L413)). Results are smoothed
+   with `speed` 0.05; the search runs every 10 frames (defaults,
+   [awb.cpp#L71-L78](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L71-L78),
+   [#L298-L328](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L298-L328)), so changes settle over a
+   few seconds.
+
+HQ camera tuning (`imx477.json`,
+[#L42-L136](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L42-L136)):
+
+| Mode | colour temperature range (K) |
+|---|---|
+| auto | 2500 – 8000 |
+| incandescent | 2500 – 3000 |
+| tungsten | 3000 – 3500 |
+| fluorescent | 4000 – 4700 |
+| indoor | 3000 – 5000 |
+| daylight | 5500 – 6500 |
+| cloudy | 7000 – 8600 |
+
+Priors by lux ([#L45-L76](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L45-L76)):
+- **0 lux:** favours ≤ 3000 K (incandescent);
+- **800 lux:** favours ≥ 6000 K;
+- **1500 lux:** peaks at 6000–6500 K (daylight).
+
+So the lux estimate (§3.7), and a lens that is much darker or brighter than the
+calibration lens, influence auto white balance. The CT curve is calibrated from
+2360 K to 9505 K.
+
+**Manual:**
+- `ColourGains` (r, b) sets the gains directly and turns auto off. The colour
+  temperature is estimated back from the curve, so the CCM still matches
+  ([awb.cpp#L209-L230](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L209-L230),
+  [ipa_base.cpp#L909-L944](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L909-L944)).
+- `AwbEnable` true re-enables auto
+  ([ipa_base.cpp#L877-L906](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L877-L906)).
+- libcamera also accepts a manual `ColourTemperature`, which looks the gains up
+  on the curve ([awb.cpp#L232-L248](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L232-L248)). The UI
+  does not offer this yet.
+- The mode names map to `AwbMode` in
+  [ipa_base.cpp#L771-L780](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L771-L780). `custom` is not defined
+  in the HQ tuning.
+
+**In the UI:**
+- ⓘ popups explain white balance overall (also linked from *Colour temp.* in
+  Actual values), the modes, and the manual gains.
+- The modes popup shows each mode's range from the tuning file. A line under
+  the mode select shows the selected range.
+- The gains popup lists the red/blue gains that neutralise common light
+  sources (2700–7500 K), computed from the camera's calibration curve
+  (gain = sensitivity / r or b). This helps to set manual gains for a known
+  light. *Lock current* copies the current auto gains.
+- The helper sends the AWB data in `hello.tuning.awb` (modes, `ct_curve`,
+  sensitivities).
+
 ---
 
 ## 4. IPC: Go ↔ helper
@@ -793,8 +874,8 @@ taken from the client.
   its limits (§3.6), and **Lock current**.
 - The raw **Focus** value (`FocusFoM`, §3.5).
 - ⓘ info popups for focus, exposure, frame rate, shutter, gain, EV, metering,
-  profiles, actual values, lux (§3.7), metering with zone maps (§3.8) and the
-  image controls including denoise (§3.9). EV, metering and profile are disabled in manual
+  profiles, actual values, lux (§3.7), metering with zone maps (§3.8), the
+  image controls including denoise (§3.9) and white balance (§3.10). EV, metering and profile are disabled in manual
   mode.
 - **Capture** button: a snapshot without interrupting the stream; the
   browser downloads the JPEG.

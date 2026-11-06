@@ -108,6 +108,9 @@ class TuningTest(unittest.TestCase):
         self.assertEqual(t["max_digital_gain"], 4.0)
         self.assertEqual(t["metering_modes"]["spot"][:3], [2, 1, 1])
         self.assertEqual(len(t["metering_modes"]["matrix"]), 15)
+        self.assertEqual(t["awb"]["modes"]["daylight"], [5500, 6500])
+        self.assertEqual(t["awb"]["ct_curve"][0], [2360.0, 0.6009, 0.3093])
+        self.assertEqual(t["awb"]["sensitivity_r"], 1.05)
         self.assertIsNone(camhelper.read_tuning(""))
 
 

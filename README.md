@@ -148,6 +148,11 @@ change how the picture is rendered, not the exposure. Denoise "auto" is
 Picamera2's video default, *fast*: spatial plus fast colour denoise. See
 DESIGN.md §3.9.
 
+**White balance:** auto picks a colour temperature within the selected mode's
+range, guided by the scene and the lux level. Manual uses red/blue gains; the
+gains ⓘ popup lists the right gains for common light sources (DESIGN.md
+§3.10).
+
 ## Troubleshooting
 
 - **"WebCodecs not available"**: see the secure-context section above.
