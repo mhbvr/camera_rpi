@@ -81,7 +81,7 @@
         <div>Digital gain <b id="md-dgain">–</b></div>
         <div>Frame time <b id="md-frame">–</b></div>
         <div>AE state <b id="md-aestate">–</b></div>
-        <div>Lux <b id="md-lux">–</b></div>
+        <div><span>Lux <button type="button" class="info" popovertarget="info-lux" aria-label="About the lux value">i</button></span> <b id="md-lux">–</b></div>
         <div>Colour temp. <b id="md-ct">–</b></div>
       </div>
       <div id="ae-limit" class="warning small" hidden></div>
@@ -250,6 +250,27 @@
   <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L763-L786" target="_blank" rel="noopener">limit logic</a> ·
     <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L527-L564" target="_blank" rel="noopener">"converged" logic</a></p>
   <button type="button" popovertarget="info-readout" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-lux" popover class="popover">
+  <h3>Lux</h3>
+  <p>An <b>estimate of scene brightness</b> worked out by libcamera from the
+    picture. The camera has no light sensor. It compares the current frame with
+    a reference frame recorded during calibration:</p>
+  <p><code>lux = 830 × (27.2 ms / shutter) × (1 / gain) × (brightness / reference brightness)</code></p>
+  <ul>
+    <li><b>Relative, not absolute:</b> the formula assumes the lens and aperture
+      used for calibration. On your lens, closing the aperture one stop halves
+      the value; an ND filter lowers it too.</li>
+    <li><b>Reflected light:</b> it uses the average brightness of the whole
+      frame, so a white wall reads higher than dark cloth under the same
+      light.</li>
+    <li>Less reliable with clipped highlights or a very dark, noisy image.</li>
+    <li>libcamera also uses it: auto exposure picks its brightness target, and
+      auto white balance its colour priors, by lux.</li>
+  </ul>
+  <p class="muted">Details: docs/DESIGN.md §3.7 ·
+    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L84-L105" target="_blank" rel="noopener">how it is computed</a></p>
+  <button type="button" popovertarget="info-lux" popovertargetaction="hide">Close</button>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="/static/app.js"></script>

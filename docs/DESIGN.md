@@ -363,6 +363,54 @@ Caveat: if libcamera is pointed at a different tuning file
 clears that variable by default when it opens the camera
 ([picamera2.py#L336-L353](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L336-L353)).
 
+
+### 3.7 Lux value
+
+The *Lux* value in *Actual values* is libcamera's `Lux` metadata: *"an estimate
+of the current illuminance level in lux"*
+([control_ids_core.yaml#L508-L514](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_core.yaml#L508-L514)).
+It is computed from the image; the camera has no light sensor.
+
+The `rpi.lux` algorithm compares the current frame with a reference frame
+recorded during calibration
+([lux.cpp#L84-L105](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L84-L105)):
+
+```
+lux = reference_lux × (reference_shutter / shutter) × (reference_gain / analogue_gain)
+      × (reference_aperture / aperture)² × (Y / reference_Y) / sensitivity
+```
+
+- **Reference values** for the HQ camera: lux 830, shutter 27242 µs, gain 1.0,
+  aperture 1.0, Y 17755
+  ([imx477.json#L15-L22](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L15-L22)).
+- **Y** is the average brightness of the whole frame, built from the ISP's
+  R/G/B sums with the white-balance gains applied, weighted 0.299 / 0.587 /
+  0.114. It does not depend on the metering mode
+  ([vc4.cpp#L271-L275](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L271-L275)).
+- **Shutter and analogue gain** are the values applied. Digital gain is not
+  used: the statistics are taken before it.
+- **Aperture:** the HQ lens reports none, so the reference value is used and
+  the aperture term is 1 ([lux.cpp#L97](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L97)).
+- **Sensitivity** is 1.0
+  ([cam_helper.cpp#L169-L177](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/cam_helper/cam_helper.cpp#L169-L177)).
+- Before the first statistics arrive the value is a default of 400
+  ([lux.cpp#L22-L31](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L22-L31)).
+
+**Reading it:**
+- It is absolute only for the lens, f-stop and filters used during calibration
+  (not documented). With a C/CS lens, treat it as a **relative** brightness
+  indicator for one lens setup: one stop smaller aperture halves it.
+- It measures reflected light and assumes an "average" scene.
+- It is less reliable with clipped highlights or at maximum gain.
+
+**Other uses in libcamera:** auto exposure chooses its brightness target
+(`y_target`) by lux
+([agc_channel.cpp#L712-L722](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L712-L722)),
+and auto white balance chooses its colour-temperature priors by lux
+([awb.cpp#L341-L345](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L341-L345)).
+A lens much darker or brighter than the calibration lens shifts these choices
+slightly.
+
 ---
 
 ## 4. IPC: Go ↔ helper
@@ -597,7 +645,7 @@ taken from the client.
   its limits (§3.6), and **Lock current**.
 - The raw **Focus** value (`FocusFoM`, §3.5).
 - ⓘ info popups for focus, exposure, frame rate, shutter, gain, EV, metering,
-  profiles and actual values. EV, metering and profile are disabled in manual
+  profiles, actual values and lux (§3.7). EV, metering and profile are disabled in manual
   mode.
 - **Capture** button: a snapshot without interrupting the stream; the
   browser downloads the JPEG.
