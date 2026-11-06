@@ -168,9 +168,11 @@ def encode_yuv420_jpeg(arr, width, height, quality, full_range):
     u = flat[base:base + csize].reshape(height // 2, cstride)[:, :width // 2]
     v = flat[base + csize:base + 2 * csize].reshape(height // 2, cstride)[:, :width // 2]
     if not full_range:
-        y = np.clip((y.astype(np.int16) - 16) * 255 // 219, 0, 255).astype(np.uint8)
-        u = np.clip((u.astype(np.int16) - 128) * 255 // 224 + 128, 0, 255).astype(np.uint8)
-        v = np.clip((v.astype(np.int16) - 128) * 255 // 224 + 128, 0, 255).astype(np.uint8)
+        # int32: (Y - 16) * 255 overflows int16 for Y > 144 (bright areas
+        # wrapped to black in snapshots).
+        y = np.clip((y.astype(np.int32) - 16) * 255 // 219, 0, 255).astype(np.uint8)
+        u = np.clip((u.astype(np.int32) - 128) * 255 // 224 + 128, 0, 255).astype(np.uint8)
+        v = np.clip((v.astype(np.int32) - 128) * 255 // 224 + 128, 0, 255).astype(np.uint8)
     y, u, v = (np.ascontiguousarray(p) for p in (y, u, v))
     try:
         import simplejpeg
