@@ -132,6 +132,7 @@ func (m *Manager) RunSession(ctx context.Context, sess *helper.Session) error {
 	m.opt.Log.Printf("camera: helper %s %s, camera %q, %d sensor modes, %d controls",
 		hello.Impl, hello.ImplVersion, hello.Camera.Model, len(hello.Camera.SensorModes), len(hello.Camera.Controls))
 	m.checkSensorMode(&hello)
+	m.publishCamera(&hello)
 
 	m.opMu.Lock()
 	m.mu.Lock()
@@ -161,6 +162,18 @@ func (m *Manager) RunSession(ctx context.Context, sess *helper.Session) error {
 			return ctx.Err()
 		}
 	}
+}
+
+// publishCamera sends a sticky "camera" event with the camera model and the
+// sensor's analogue gain limit (from libcamera's control ranges).
+func (m *Manager) publishCamera(h *proto.Hello) {
+	ev := map[string]any{"event": "camera", "model": h.Camera.Model, "impl": h.Impl, "impl_version": h.ImplVersion}
+	if ci, ok := h.Camera.Controls["AnalogueGain"]; ok {
+		if max, ok := ci.MaxFloat(); ok {
+			ev["sensor_max_gain"] = max
+		}
+	}
+	m.hub.PublishSticky("camera", stream.NewEvent(ev))
 }
 
 func (m *Manager) checkSensorMode(h *proto.Hello) {

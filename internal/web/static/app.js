@@ -6,7 +6,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 let config = null;
 let lastMeta = null;
 let camLatency = null; // helper: sensor timestamp -> socket write, ms
-let focusPeak = 0;
+let camera = null; // "camera" event: model, sensor_max_gain
 
 // ---------- helpers ----------
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
@@ -67,6 +67,9 @@ function updateEnabled() {
 
 function render(cfg) {
   config = cfg;
+  describeProfile();
+  describeDenoise();
+  describeAwb();
   $$('[data-path]').forEach((el) => {
     setField(el, getPath(cfg, el.dataset.path));
     updateOutput(el);
@@ -179,19 +182,89 @@ $('#fullscreen').addEventListener('click', () => $('.video-wrap').requestFullscr
 // ---------- metadata ----------
 function showMeta(md) {
   lastMeta = md;
-  if (md.ExposureTime) $('#md-shutter').textContent = fmtShutter(md.ExposureTime);
+  if (md.ExposureTime) $('#md-shutter').textContent = fmtShutter(md.ExposureTime) + ` (${ms(md.ExposureTime)})`;
   if (md.AnalogueGain) $('#md-gain').textContent = md.AnalogueGain.toFixed(2);
+  if (md.DigitalGain) $('#md-dgain').textContent = md.DigitalGain.toFixed(2);
+  if (md.FrameDuration) $('#md-frame').textContent = `${ms(md.FrameDuration)} (${(1e6 / md.FrameDuration).toFixed(1)} fps)`;
+  if (md.AeState != null) $('#md-aestate').textContent = AE_STATES[md.AeState] ?? md.AeState;
+  checkAeLimit(md);
   if (md.ColourTemperature) $('#md-ct').textContent = Math.round(md.ColourTemperature) + ' K';
   if (md.Lux != null) $('#md-lux').textContent = Math.round(md.Lux);
-  const fom = md.FocusFoM;
-  if (fom != null) {
-    focusPeak = Math.max(focusPeak, fom);
-    $('#focus-val').textContent = Math.round(fom);
-    $('#focus-bar').style.width = (focusPeak ? (100 * fom) / focusPeak : 0) + '%';
-    $('#focus-peak').style.left = '100%';
-  }
+  if (md.FocusFoM != null) $('#focus-val').textContent = Math.round(md.FocusFoM);
 }
-$('.focus').addEventListener('click', () => (focusPeak = 0));
+
+// ---------- explanations (docs/DESIGN.md §3.5-§3.10) ----------
+// The UI does not read the camera tuning file. Popups explain the behaviour
+// in general and name the tuning parameter (e.g. rpi.agc → exposure_modes)
+// that sets the actual values for the camera in use.
+const AE_STATES = { 0: 'Idle', 1: 'Searching', 2: 'Converged' }; // libcamera AeState values
+const ms = (us) => (us / 1000).toFixed(1).replace(/\.0$/, '') + ' ms';
+
+function fillCameraInfo() {
+  if (camera?.sensor_max_gain) $$('[data-fill="sensor-max-gain"]').forEach((e) => (e.textContent = camera.sensor_max_gain.toFixed(2)));
+}
+
+// Pi 4 AGC metering zones (Raspberry Pi Camera Algorithm and Tuning Guide,
+// §5.9.3, Figure 9) on a 5-row × 7-column grid: [zone, rowStart, rowEnd,
+// colStart, colEnd]. Drawn with zone numbers; the weights per zone are
+// rpi.agc → metering_modes → <mode> → weights in the tuning file.
+const METERING_ZONES = [
+  [11, 1, 2, 1, 2], [9, 1, 2, 2, 7], [12, 1, 2, 7, 8],
+  [7, 2, 5, 1, 2], [5, 2, 5, 2, 3], [3, 2, 3, 3, 6], [1, 3, 4, 3, 4], [0, 3, 4, 4, 5],
+  [2, 3, 4, 5, 6], [4, 4, 5, 3, 6], [6, 2, 5, 6, 7], [8, 2, 5, 7, 8],
+  [13, 5, 6, 1, 2], [10, 5, 6, 2, 7], [14, 5, 6, 7, 8],
+];
+function drawZoneLayout() {
+  const cells = METERING_ZONES.map(([z, r1, r2, c1, c2]) => `<div style="grid-area:${r1}/${c1}/${r2}/${c2}">${z}</div>`).join('');
+  $$('[data-fill="metering-zones"]').forEach((e) => (e.innerHTML = `<div class="zone-grid zone-layout">${cells}</div>`));
+}
+drawZoneLayout();
+
+// Denoise settings -> what the Pi 4 ISP does (libcamera vc4.cpp DenoiseModeTable).
+const DENOISE_DESC = {
+  auto: 'Spatial denoise + fast colour denoise (same as Picamera2\'s video default).',
+  off: 'No noise reduction.',
+  minimal: 'Spatial denoise only, no colour denoise.',
+  fast: 'Spatial denoise + fast colour denoise.',
+  high_quality: 'Spatial denoise + high-quality colour denoise (more processing).',
+};
+function describeDenoise() {
+  const el = $('#denoise-desc');
+  if (el && config) el.textContent = DENOISE_DESC[config.controls.denoise] ?? '';
+}
+
+// Line under the exposure profile select: where the steps are defined, and
+// the frame-time cap (which does not depend on the tuning file).
+function describeProfile() {
+  const el = $('#profile-desc');
+  if (!el || !config) return;
+  const name = config.controls.exposure_mode;
+  el.textContent = `Steps: tuning file rpi.agc → exposure_modes → ${name}. ` +
+    `At ${config.controls.fps} fps the shutter cannot exceed ${ms(1e6 / config.controls.fps)} (frame time).`;
+}
+
+// Line under the white balance mode select.
+function describeAwb() {
+  const el = $('#awb-desc');
+  if (el && config) el.textContent = `Range: tuning file rpi.awb → modes → ${config.controls.awb_mode} → lo … hi (kelvin).`;
+}
+
+// Auto exposure using the longest shutter the frame time allows: from here
+// only gain can brighten the image, up to the profile's last gain step.
+function checkAeLimit(md) {
+  const box = $('#ae-limit');
+  const c = config?.controls;
+  if (!c?.auto_exposure || !md.ExposureTime || !md.FrameDuration || md.AeState === 0 ||
+      md.ExposureTime < 0.95 * md.FrameDuration) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.textContent = `Shutter at the frame-time limit (${ms(md.FrameDuration)} at ${(1e6 / md.FrameDuration).toFixed(0)} fps); ` +
+    `only gain (now ${(md.AnalogueGain || 0).toFixed(1)}) can brighten the image further. If the gain has reached the last step of ` +
+    `rpi.agc → exposure_modes → ${c.exposure_mode} → gain, the image cannot get brighter in auto mode and EV has no effect: ` +
+    `lower the frame rate or use manual exposure.`;
+}
 
 // ---------- player ----------
 const overlay = $('#overlay');
@@ -205,6 +278,10 @@ const player = new Player($('#video'), {
     if (ev.event === 'state') setOverlay(ev.state === 'streaming' ? '' : ev.state + (ev.detail ? ': ' + ev.detail : ''));
     else if (ev.event === 'metadata') showMeta(ev.data);
     else if (ev.event === 'stats') camLatency = ev.data?.latency_ms ?? null;
+    else if (ev.event === 'camera') {
+      camera = ev;
+      fillCameraInfo();
+    }
     else if (ev.event === 'error') toast('Camera error: ' + JSON.stringify(ev.data), true);
   },
   onStatus(s) {

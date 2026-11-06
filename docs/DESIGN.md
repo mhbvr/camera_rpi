@@ -209,7 +209,445 @@ A Picamera2 `post_callback` samples per-frame metadata at about 2 Hz:
 `ColourTemperature`, `Lux`, `FrameDuration`, and `FocusFoM`
 if present. These are sent as events. The UI shows them live, and offers a
 **"lock current"** button that copies the current auto values into manual
-settings. `FocusFoM` acts as a **focus meter** for the HQ camera's manual lens.
+settings. `FocusFoM` is shown as a raw number to help focus the HQ camera's
+manual lens (§3.5).
+
+### 3.5 Focus value (`FocusFoM`)
+The UI's **Focus** number is libcamera's `FocusFoM` metadata, shown raw. It is
+a **sharpness score computed by the image processor from the picture**, not
+something the lens reports. The HQ camera has no autofocus, and the value is
+computed for every camera.
+
+How the Pi 4 computes it (Raspberry Pi libcamera `main` at the time of writing,
+and kernel `rpi-6.6.y`):
+
+1. The ISP runs a fixed focus (contrast) filter and accumulates its output in
+   12 regions: *"Focus measure - accumulated output of the focus filter"*
+   ([bcm2835-isp.h#L310-L324](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/include/uapi/linux/bcm2835-isp.h#L310-L324),
+   [`FOCUS_REGIONS 12`](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/include/uapi/linux/bcm2835-isp.h#L278)).
+2. On the Pi 4 the regions form a 4 × 3 grid
+   ([controller.cpp#L40](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/controller.cpp#L40)).
+3. libcamera uses the second filter's sum over pixels above the threshold,
+   divided by 1000, per region
+   ([vc4.cpp#L278-L282](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L278-L282)).
+4. `FocusFoM` is the average of the central regions only: on 4 × 3 that is the
+   middle row, two middle columns, roughly the **middle third of the height and
+   middle half of the width**
+   ([ipa_base.cpp#L1641-L1663](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1641-L1663)).
+
+libcamera's definition: *"A larger FocusFoM value indicates a more in-focus
+frame … not necessarily aimed at providing a way to implement a focus algorithm
+by the application, rather an indication of how in-focus a frame is"*
+([control_ids_core.yaml#L657-L668](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_core.yaml#L657-L668)).
+
+**Reading it:** higher is sharper. There is no unit and no absolute scale,
+because the value is a sum that is not divided by the pixel count, so it depends
+on scene detail, brightness and exposure. Compare values only for the same
+scene and settings. Sensor noise at high gain raises it, so focus in good light
+with exposure locked (*Lock current*).
+
+**Not configurable:** nothing at runtime or in the tuning file changes how it
+is computed.
+- The ISP driver exposes no focus-statistics settings
+  ([bcm2835-isp.h#L18-L35](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/include/uapi/linux/bcm2835-isp.h#L18-L35)).
+- The grid, filter choice and centre averaging are fixed in code.
+- `imx477.json` has no focus section.
+- The autofocus window controls (`AfWindows`, `AfMetering`) exist only when a
+  movable lens is present
+  ([ipa_base.cpp#L105-L115](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L105-L115),
+  [#L278-L280](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L278-L280)).
+
+Possible later extensions:
+- `StatsOutputEnable` delivers the raw per-region statistics
+  ([control_ids_rpi.yaml#L10-L31](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_rpi.yaml#L10-L31)).
+  From those the helper could build a 4 × 3 sharpness map or a different
+  weighting.
+- The helper could compute its own sharpness metric over a chosen region of
+  the image.
+
+
+### 3.6 Exposure control: EV, frame rate, shutter, gain
+
+Raspberry Pi's libcamera auto-exposure algorithm (`rpi.agc`) is what the
+helper drives. Links point to
+[raspberrypi/libcamera @ 9fe1678](https://github.com/raspberrypi/libcamera/tree/9fe1678b8ad5fbae875942b55b58ade23014194c).
+
+**Auto mode, every frame:**
+1. `ExposureValue` (EV) becomes a multiplier 2^EV
+   ([ipa_base.cpp#L1083-L1099](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1083-L1099)).
+2. The brightness target from the tuning file (`y_target`, ≈ 0.16–0.17 of
+   full scale for the HQ camera) is multiplied by 2^EV and **capped at 0.9**
+   ([agc_channel.cpp#L693-L711](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L693-L711)). So EV above about
+   **+2.4** has no further effect.
+3. The needed total exposure (shutter × gain) is computed and **capped at
+   max shutter × max gain** of the selected exposure profile. Max shutter is
+   the profile's last step, limited by the frame time
+   ([#L763-L786](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L763-L786)).
+4. The frame time caps the shutter: `FrameDurationLimits` (the server sends
+   min = max = 1/fps) determines the longest exposure the sensor allows, which
+   becomes the algorithm's maximum
+   ([ipa_base.cpp#L1780-L1810](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1780-L1810),
+   [agc_channel.cpp#L972-L982](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L972-L982)).
+5. The exposure is split by walking the profile's steps: shutter to the next
+   step, then gain to the next step. Analogue gain is capped at the sensor
+   maximum (22.26); digital gain makes up the rest, between 1 and
+   `max_digital_gain` (default 4)
+   ([#L881-L956](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L881-L956)).
+
+HQ camera profiles (`imx477.json`):
+
+| profile | shutter steps (µs) | gain steps |
+|---|---|---|
+| normal | 100, 10000, 30000, 60000, 66666 | 1, 2, 4, 6, 16 |
+| short | 100, 5000, 10000, 20000, 66666 | 1, 2, 4, 6, 16 |
+| long | 100, 10000, 30000, 60000, 120000 | 1, 2, 4, 6, 16 |
+
+**Why EV can do nothing:** in a dark scene at 30 fps auto exposure sits at
+33 ms × gain 16, the cap from steps 3–4 (M0 spike: `ExposureTime=33013
+AnalogueGain=16.0`). EV raises a target that is already out of reach. To get a
+brighter image in auto mode:
+- lower the frame rate (15 fps allows the normal profile's 66.7 ms);
+- use the "long" profile (120 ms) with ≤ 8 fps;
+- or switch to manual.
+
+**Manual mode:**
+- `AeEnable` is a wrapper for `ExposureTimeMode`/`AnalogueGainMode`
+  ([ipa_base.cpp#L1103-L1112](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1103-L1112)).
+- Manual values are ignored while auto is on
+  ([#L979-L997](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L979-L997),
+  [#L1003-L1020](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1003-L1020)).
+- **EV has no effect** in manual mode: the exposure is simply shutter × gain
+  ([agc_channel.cpp#L765-L767](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L765-L767)). The UI disables EV,
+  metering and profile when auto exposure is off.
+- The shutter is still clamped by the frame time. The server stretches the
+  frame time when the manual shutter is longer (`FrameDurationUS` in
+  `internal/camera/controls.go`), which lowers the frame rate and restarts the
+  encoder.
+- libcamera accepts manual gain up to analogue max × max digital gain
+  (≈ 89) ([#L985-L1000](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L985-L1000)). The UI currently stops at 22.
+
+**Reading the actual values.** Per-frame metadata: `ExposureTime`,
+`AnalogueGain`, `DigitalGain`, `FrameDuration`, and `AeState` (Idle / Searching /
+Converged) ([ipa_base.cpp#L1590-L1619](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1590-L1619)).
+- There is **no "limit reached" flag**.
+- `Converged` only means the values stopped changing. libcamera says *"we
+  don't know the exposure/gain limits of the sensor, so the values we keep
+  requesting may be unachievable"*
+  ([agc_channel.cpp#L527-L564](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L527-L564)). So a stuck dark
+  scene reports Converged.
+
+**What the UI does** (`internal/web/static/app.js`):
+- The *Actual values* block shows shutter, analogue and digital gain, frame
+  time, AE state, lux and colour temperature.
+- In auto mode, a hint appears when **shutter ≥ 95 % of the frame time**. From
+  then on only gain can brighten the image, up to the last gain step of the
+  profile (`rpi.agc → exposure_modes → <profile> → gain`). If that step is
+  reached, EV has no effect.
+- The UI cannot see the profile's own shutter limit, which can be lower than
+  the frame time at low frame rates. The ⓘ popup says so.
+- Info popups (ⓘ) explain exposure overall, frame rate, shutter, gain, EV,
+  metering, profiles and the actual values. The line under the profile select
+  names the tuning parameter and shows the frame-time cap for the current fps.
+
+**The UI does not read the tuning file.** The popups explain the behaviour in
+general and name the tuning parameter that sets the actual values (for example
+`rpi.agc → exposure_modes`). The tables in this document are from Raspberry
+Pi's `imx477.json` at the linked commit; the file on a given Pi may differ.
+
+To see which file libcamera uses, look for libcamera's log line *"Using tuning
+file …"* in the camweb log (helper output is prefixed `[helper]`). libcamera
+picks the file in this order
+([ipa_proxy.cpp#L33-L94](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/ipa_proxy.cpp#L33-L94)):
+1. `LIBCAMERA_RPI_TUNING_FILE`;
+2. `LIBCAMERA_IPA_CONFIG_PATH` dirs + `/rpi/vc4/<sensor>.json`;
+3. the system dirs, usually `/usr/share/libcamera/ipa/rpi/vc4/imx477.json`
+   for the HQ camera on a Pi 4;
+4. `uncalibrated.json` as a fallback.
+
+Picamera2 clears `LIBCAMERA_RPI_TUNING_FILE` when it opens the camera without
+an explicit tuning
+([picamera2.py#L336-L353](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L336-L353)).
+
+---
+
+### 3.7 Lux value
+
+The *Lux* value in *Actual values* is libcamera's `Lux` metadata: *"an estimate
+of the current illuminance level in lux"*
+([control_ids_core.yaml#L508-L514](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_core.yaml#L508-L514)).
+It is computed from the image; the camera has no light sensor.
+
+The `rpi.lux` algorithm compares the current frame with a reference frame
+recorded during calibration
+([lux.cpp#L84-L105](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L84-L105)):
+
+```
+lux = reference_lux × (reference_shutter / shutter) × (reference_gain / analogue_gain)
+      × (reference_aperture / aperture)² × (Y / reference_Y) / sensitivity
+```
+
+- **Reference values** for the HQ camera: lux 830, shutter 27242 µs, gain 1.0,
+  aperture 1.0, Y 17755
+  ([imx477.json#L15-L22](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L15-L22)).
+- **Y** is the average brightness of the whole frame, built from the ISP's
+  R/G/B sums with the white-balance gains applied, weighted 0.299 / 0.587 /
+  0.114. It does not depend on the metering mode
+  ([vc4.cpp#L271-L275](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L271-L275)).
+- **Shutter and analogue gain** are the values applied. Digital gain is not
+  used: the statistics are taken before it.
+- **Aperture:** the HQ lens reports none, so the reference value is used and
+  the aperture term is 1 ([lux.cpp#L97](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L97)).
+- **Sensitivity** is 1.0
+  ([cam_helper.cpp#L169-L177](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/cam_helper/cam_helper.cpp#L169-L177)).
+- Before the first statistics arrive the value is a default of 400
+  ([lux.cpp#L22-L31](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L22-L31)).
+
+**Reading it:**
+- It is absolute only for the lens, f-stop and filters used during calibration
+  (not documented). With a C/CS lens, treat it as a **relative** brightness
+  indicator for one lens setup: one stop smaller aperture halves it.
+- It measures reflected light and assumes an "average" scene.
+- It is less reliable with clipped highlights or at maximum gain.
+
+**Other uses in libcamera:** auto exposure chooses its brightness target
+(`y_target`) by lux
+([agc_channel.cpp#L712-L722](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L712-L722)),
+and auto white balance chooses its colour-temperature priors by lux
+([awb.cpp#L341-L345](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L341-L345)).
+A lens much darker or brighter than the calibration lens shifts these choices
+slightly.
+
+
+### 3.8 Metering modes
+
+Metering decides **which parts of the image** auto exposure uses to judge
+brightness. It applies only in auto mode (the UI disables it in manual).
+
+**How it works (Pi 4).** The ISP collects statistics in **15 fixed zones**, laid
+out as in the Raspberry Pi tuning guide
+([Camera Algorithm and Tuning Guide §5.9.3, Figure 9](https://datasheets.raspberrypi.com/camera/raspberry-pi-camera-guide.pdf#page=33)).
+Zone sizes in the sketch are approximate:
+
+```
++----+------------------------+----+
+| 11 |           9            | 12 |
++----+----+-------------+-----+----+
+|    |    |      3      |     |    |
+|    |    +----+---+----+     |    |
+| 7  | 5  | 1  | 0 | 2  |  6  | 8  |
+|    |    +----+---+----+     |    |
+|    |    |      4      |     |    |
++----+----+-------------+-----+----+
+| 13 |           10           | 14 |
++----+------------------------+----+
+```
+
+Each metering mode is a list of 15 weights in the tuning file. libcamera
+multiplies each zone's R/G/B sums *and* its pixel count by the zone's weight
+([vc4.cpp#L251-L261](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L251-L261)). The
+brightness Y that auto exposure drives towards its target is therefore a
+weighted pixel average
+([agc_channel.cpp#L633-L691](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L633-L691)):
+
+    Y = Σ wᵢ·(sum of pixels in zone i) / Σ wᵢ·(pixel count of zone i)
+
+HQ camera weights (`imx477.json`,
+[#L206-L229](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L206-L229)),
+listed for zones 0–14:
+
+| UI | libcamera / tuning name | weights (zones 0…14) | effect |
+|---|---|---|---|
+| centre | `CentreWeighted` / `centre-weighted` | 3 3 3 · 2 2 2 2 · 1 1 1 1 · 0 0 0 0 | centre row ×3, ring ×2, edges ×1, corners ignored |
+| spot | `Spot` / `spot` | 2 1 1 · 0 … 0 | only the three small central zones |
+| matrix | `Matrix` / `matrix` | all 1 | plain whole-frame average |
+
+The `AeMeteringMode` control is mapped to these names in
+[ipa_base.cpp#L750-L755](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L750-L755)
+and applied in [#L1023-L1040](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1023-L1040).
+libcamera also has a `custom` mode, but the HQ tuning file does not define it,
+so the UI does not offer it.
+
+**Things metering does not change:**
+- **Histogram constraints** are applied after the weighted average, and on the
+  Pi 4 they count every pixel once regardless of weight (tuning guide §5.9.4).
+  The HQ tuning's default constraint mode is a lower bound: the brightest 2 % of
+  pixels must reach at least 0.3 of full scale, which can raise exposure for
+  dim scenes.
+- The **lux** estimate uses the whole frame (§3.7).
+- The limits (frame time, profile maximum) are the same in every mode (§3.6).
+
+**In the UI:**
+- The metering ⓘ popup draws the 15-zone layout with zone numbers.
+- It names the parameter that holds the weights, in zone order 0–14:
+  `rpi.agc → metering_modes → <mode> → weights`.
+- It names the histogram rules (`rpi.agc → constraint_modes`; the first mode
+  in the file is the default).
+- The zone geometry is fixed in `internal/web/static/app.js`
+  (`METERING_ZONES`), taken from the tuning guide figure.
+
+---
+
+### 3.9 Image processing: brightness, contrast, saturation, sharpness, denoise
+
+These controls change how the ISP renders the image. They apply live to the
+stream and snapshots in both exposure modes, and they **do not change
+exposure**. Links: [raspberrypi/libcamera @ 9fe1678](https://github.com/raspberrypi/libcamera/tree/9fe1678b8ad5fbae875942b55b58ade23014194c).
+
+| Control | Range (UI) | libcamera algorithm | What it does |
+|---|---|---|---|
+| Brightness | −1…1, default 0 | `rpi.contrast` | adds `brightness × 65536` to the tone (gamma) curve output |
+| Contrast | 0…4, default 1 | `rpi.contrast` | scales the curve around mid-grey: `(y − 32768) × contrast + 32768` |
+| Saturation | 0…4, default 1 | `rpi.ccm` | scales chroma inside the colour-correction matrix |
+| Sharpness | 0…8, default 1 | `rpi.sharpen` | scales the ISP sharpening strength, limit and threshold |
+| Denoise | off / minimal / fast / high quality (auto = fast) | `rpi.sdn` + ISP colour denoise | selects spatial and colour noise reduction |
+
+**Brightness and contrast** are applied in one step at the end of the tone curve
+([contrast.cpp#L143-L156](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L143-L156), called from
+[#L160-L190](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L160-L190); the controls are mapped in
+[ipa_base.cpp#L1255-L1283](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1255-L1283)).
+Values are clipped to the 16-bit range, so brightness ±0.2 lifts blacks or
+crushes shadows. It is a level shift after gamma, not exposure. Before that,
+the HQ tuning enables **adaptive contrast enhancement** (`ce_enable: 1`,
+[imx477.json#L645](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L645)), with
+defaults from [contrast.cpp#L41-L58](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L41-L58):
+- the 1 % histogram point is moved towards 1.5 % of full scale (by at most 500
+  of 65536);
+- the 95 % point is moved towards 95 % of full scale (by at most 2000);
+- the median stays put
+  ([#L99-L141](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L99-L141)).
+
+The UI cannot turn this off.
+
+**Saturation:** the CCM chosen for the current colour temperature (6 matrices
+from 2850 K to 7600 K in the HQ tuning) is converted to Y/Cb/Cr, Cb and Cr are
+multiplied by the saturation, and the result is converted back
+([ccm.cpp#L130-L145](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/ccm.cpp#L130-L145),
+[#L149-L182](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/ccm.cpp#L149-L182)). 0 gives greyscale; luma is
+unchanged.
+
+**Sharpness:** for user strength *s*, the ISP receives strength = 1.0 × *s* /
+m, limit = 0.5 × √*s* / m and threshold = 0.75 × m / √*s*
+([sharpen.cpp#L52-L84](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/sharpen.cpp#L52-L84); base values from
+[imx477.json#L748-L752](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L748-L752)).
+Here m is the mode's noise factor √(binX × binY), which is 2 for our 2×2-binned
+mode ([ipa_base.cpp#L624](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L624)).
+*s* = 0 disables sharpening. Sharpening also raises bitrate and visible noise.
+
+**Denoise:** `NoiseReductionMode` maps to a Pi 4 denoise mode
+([vc4.cpp#L293-L325](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L293-L325)), which
+drives two ISP blocks
+([vc4.cpp#L454-L490](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L454-L490)):
+
+| UI | libcamera `NoiseReductionMode` | spatial denoise (SDN) | colour denoise (CDN) |
+|---|---|---|---|
+| off | Off | off | off |
+| minimal | Minimal | on | off |
+| fast / auto | Fast | on | fast |
+| high quality | HighQuality | on | high quality |
+| (not offered) | ZSL | on | high quality |
+
+How the denoise blocks are driven:
+- SDN's thresholds come from the sensor noise model × `deviation` 3.2, with
+  `strength` 0.75 (defaults; the HQ tuning's `rpi.sdn` section is empty)
+  ([sdn.cpp#L38-L68](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/sdn.cpp#L38-L68)).
+- The noise model scales with √(analogue gain) / mode factor
+  ([noise.cpp#L68-L76](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/noise.cpp#L68-L76)), so denoise
+  strengthens automatically at high gain.
+- **"auto" is Picamera2's video default, Fast**
+  ([picamera2.py#L953-L957](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L953-L957)). The server sends it
+  explicitly, so switching back to auto from another mode takes effect.
+- Fast colour denoise uses the ISP's second output. When the application does
+  not use it, libcamera configures it internally at a quarter of the main size
+  ([pipeline vc4.cpp#L680-L712](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/pipeline/rpi/vc4/vc4.cpp#L680-L712)).
+  This app uses that output for the H.264 stream (1440×1080, not a quarter of
+  2028×1520), and how fast CDN behaves then is not documented. Compare
+  off / fast / high quality at high gain on the Pi.
+
+**In the UI:**
+- Each control has an ⓘ popup with the above in short form, naming the tuning
+  parameters (`rpi.contrast → gamma_curve, ce_enable, …`, `rpi.ccm → ccms`,
+  `rpi.sharpen → threshold, strength, limit`, `rpi.sdn → deviation, strength`).
+- The Image section has an overview popup.
+- A line under the denoise select says what the selected mode switches on.
+
+
+### 3.10 White balance
+
+White balance multiplies the red and blue channels by **colour gains** (green =
+1) so that neutral objects come out neutral. The colour-correction matrix
+(§3.9) is then chosen for the resulting colour temperature. Links:
+[raspberrypi/libcamera @ 9fe1678](https://github.com/raspberrypi/libcamera/tree/9fe1678b8ad5fbae875942b55b58ade23014194c).
+
+**Auto (`rpi.awb`, Bayesian search):**
+1. **Statistics** come from **16 × 12 zones**
+   ([controller.cpp#L38](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/controller.cpp#L38)).
+   Zones with fewer than 16 pixels counted or a green level below 32 are
+   ignored ([awb_bayes.cpp#L134-L135](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L134-L135),
+   [awb.cpp#L373-L407](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L373-L407)).
+2. **Coarse search:** for colour temperatures from the mode's `lo` to `hi`,
+   it takes the calibrated r/b for that temperature from `ct_curve` and computes
+   how far the zones would be from grey (squared deviations, each capped at
+   0.2) ([awb.cpp#L409-L425](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L409-L425)). It subtracts
+   the **prior** log-likelihood of that temperature at the current lux level
+   and keeps the best
+   ([awb_bayes.cpp#L241-L285](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L241-L285); priors
+   interpolated by lux at [#L215-L239](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L215-L239)).
+3. **Fine search:** around the best point, including small steps off the curve
+   (`transverse_pos` 0.0238, `transverse_neg` 0.0443) to allow green/magenta
+   tints such as fluorescent light
+   ([#L287-L367](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L287-L367)).
+4. **Output:** gains = `sensitivity` (1.05) / r and / b
+   ([#L369-L413](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L369-L413)). Results are smoothed
+   with `speed` 0.05; the search runs every 10 frames (defaults,
+   [awb.cpp#L71-L78](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L71-L78),
+   [#L298-L328](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L298-L328)), so changes settle over a
+   few seconds.
+
+HQ camera tuning (`imx477.json`,
+[#L42-L136](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L42-L136)):
+
+| Mode | colour temperature range (K) |
+|---|---|
+| auto | 2500 – 8000 |
+| incandescent | 2500 – 3000 |
+| tungsten | 3000 – 3500 |
+| fluorescent | 4000 – 4700 |
+| indoor | 3000 – 5000 |
+| daylight | 5500 – 6500 |
+| cloudy | 7000 – 8600 |
+
+Priors by lux ([#L45-L76](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L45-L76)):
+- **0 lux:** favours ≤ 3000 K (incandescent);
+- **800 lux:** favours ≥ 6000 K;
+- **1500 lux:** peaks at 6000–6500 K (daylight).
+
+So the lux estimate (§3.7), and a lens that is much darker or brighter than the
+calibration lens, influence auto white balance. The CT curve is calibrated from
+2360 K to 9505 K.
+
+**Manual:**
+- `ColourGains` (r, b) sets the gains directly and turns auto off. The colour
+  temperature is estimated back from the curve, so the CCM still matches
+  ([awb.cpp#L209-L230](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L209-L230),
+  [ipa_base.cpp#L909-L944](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L909-L944)).
+- `AwbEnable` true re-enables auto
+  ([ipa_base.cpp#L877-L906](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L877-L906)).
+- libcamera also accepts a manual `ColourTemperature`, which looks the gains up
+  on the curve ([awb.cpp#L232-L248](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L232-L248)). The UI
+  does not offer this yet.
+- The mode names map to `AwbMode` in
+  [ipa_base.cpp#L771-L780](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L771-L780). `custom` is not defined
+  in the HQ tuning.
+
+**In the UI:**
+- ⓘ popups explain white balance overall (also linked from *Colour temp.* in
+  Actual values), the modes, and the manual gains.
+- Each popup names the `rpi.awb` parameters involved: `modes → lo/hi`,
+  `ct_curve`, `priors`, `sensitivity_r/b`, `transverse_pos/neg`, `speed`,
+  `frame_period`, `min_pixels`, `min_G`.
+- The line under the mode select names `rpi.awb → modes → <mode>`.
+- The gains popup gives the rule for calibrated gains (sensitivity / r or b
+  from `ct_curve`). *Lock current* copies the current auto gains.
 
 ---
 
@@ -440,8 +878,14 @@ taken from the client.
   `POST /api/config` on its **`change` event** (slider released, select
   changed, field committed), with no debounce and no Apply button. Fields that
   interrupt the stream briefly (stream size, bitrate, GOP) are labelled.
-- **Readout** of live AE/AWB values from metadata, with **Lock current** and a
-  focus meter (`FocusFoM` bar).
+- **Actual values** from metadata (shutter, analogue/digital gain, frame time,
+  AE state, lux, colour temperature), with a warning when auto exposure is at
+  its limits (§3.6), and **Lock current**.
+- The raw **Focus** value (`FocusFoM`, §3.5).
+- ⓘ info popups for focus, exposure, frame rate, shutter, gain, EV, metering,
+  profiles, actual values, lux (§3.7), metering with the zone layout (§3.8), the
+  image controls including denoise (§3.9) and white balance (§3.10). EV, metering and profile are disabled in manual
+  mode.
 - **Capture** button: a snapshot without interrupting the stream; the
   browser downloads the JPEG.
 - Collapsible `<details>` sections. Responsive layout for phones.

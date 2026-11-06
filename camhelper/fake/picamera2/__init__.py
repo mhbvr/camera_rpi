@@ -46,10 +46,18 @@ class _Request:
     def get_metadata(self):
         c = self.cam._controls
         t = time.monotonic()
-        auto = c.get("AeEnable", True)
+        auto = c.get("AeEnable", True) and c.get("ExposureTimeMode", 0) == 0
+        fd = int(1e6 / self.cam._fps())
+        if auto and os.environ.get("FAKE_DARK"):  # auto exposure stuck at its limits
+            exp, gain = min(fd - 300, 66666), 16.0
+        elif auto:
+            exp, gain = 8000, 2.0
+        else:
+            exp, gain = c.get("ExposureTime", 8000), c.get("AnalogueGain", 2.0)
         return {
-            "ExposureTime": 8000 if auto else c.get("ExposureTime", 8000),
-            "AnalogueGain": 2.0 if auto else c.get("AnalogueGain", 2.0),
+            "ExposureTime": exp,
+            "AnalogueGain": gain,
+            "AeState": 2 if auto else 0,
             "DigitalGain": 1.0,
             "ColourGains": tuple(c.get("ColourGains", (1.8, 1.5))),
             "ColourTemperature": 4800 + 100 * math.sin(t / 5),

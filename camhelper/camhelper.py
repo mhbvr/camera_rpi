@@ -48,7 +48,7 @@ ENCODER_ASSUMED_FPS = 30.0
 MAX_ENCODER_BITRATE = 25_000_000
 METADATA_KEYS = ("ExposureTime", "AnalogueGain", "DigitalGain", "ColourGains",
                  "ColourTemperature", "Lux", "FrameDuration", "FocusFoM",
-                 "SensorTimestamp")
+                 "AeState", "SensorTimestamp")
 
 log = logging.getLogger("camhelper")
 

@@ -21,7 +21,7 @@ M4 Polish                       ─┘  backpressure tuning, systemd unit, READM
 
 | Milestone | Code | Verified here (no Pi) | Needs the Pi |
 |---|---|---|---|
-| M0 spike | `spike/m0_spike.py` | runs against the fake Picamera2 | **done**, results and analysis in `docs/SPIKE.md`. Fixes applied: bitrate compensation (the encoder assumes 30 fps), absolute timestamps; camera-side latency 53 ms p50 measured. Follow-ups: re-run `limits` to confirm compensation, check aspect images, glass-to-glass |
+| M0 spike | `spike/m0_spike.py` | runs against the fake Picamera2 | **done**, results and analysis in `docs/SPIKE.md`. Fixes applied: bitrate compensation (the encoder assumes 30 fps), absolute timestamps; camera-side latency 53 ms p50 measured. Compensation confirmed (spike 0.9 re-run). Follow-ups: check aspect images, glass-to-glass |
 | M1 IPC + stream | done | Go tests (race detector), fakecam + headless Chromium decodes and renders 1440×1080@30; helper `kill -9` → recovers in ~1 s | glass-to-glass latency, CPU |
 | M2 config + live controls | done | Go tests; real `camhelper.py` on fake Picamera2: live controls, encoder restart, reconfigure | that controls take effect on the real camera (auto/manual exposure semantics, M0 0.7) |
 | M3 snapshot | done | 2028×1520 JPEG via both the Go fake and `camhelper.py` (Pillow and simplejpeg paths, colour round-trip test) | no video gap during capture (M0 0.4/0.5) |
@@ -215,8 +215,9 @@ StillWorker                              # thread (or subprocess if M0 says so):
      that disables manual inputs, logarithmic shutter slider, gain, EV,
      metering, mode), White balance, Image (brightness, contrast, saturation,
      sharpness, denoise);
-   - metadata readout (shutter as 1/x s, gain, CT, lux), **Lock current**,
-     and a `FocusFoM` bar with a peak-hold marker.
+   - actual values (shutter, analogue/digital gain, frame time, AE state,
+     lux, CT) with an auto-exposure limit warning, **Lock current**, the raw
+     `FocusFoM` value, and ⓘ info popups (DESIGN §3.5, §3.6).
 
 ### Acceptance criteria
 - [ ] Moving exposure, gain, WB and contrast sliders changes the image

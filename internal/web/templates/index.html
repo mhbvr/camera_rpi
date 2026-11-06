@@ -38,7 +38,7 @@
           {{range .StreamSizes}}<option value="{{index . 0}}x{{index . 1}}">{{index . 0}}×{{index . 1}}</option>{{end}}
         </select>
       </label>
-      <label>Frame rate <output data-for="controls.fps"></output> fps <span class="interrupts">interrupts stream</span>
+      <label>Frame rate <output data-for="controls.fps"></output> fps <span class="interrupts">interrupts stream</span> <button type="button" class="info" popovertarget="info-fps" aria-label="About frame rate">i</button>
         <input type="range" data-path="controls.fps" min="{{.L.FPSMin}}" max="{{.L.FPSMax}}" step="1">
       </label>
       <label>Bitrate <output data-for="encoder.bitrate"></output> Mbit/s <span class="interrupts">interrupts stream</span>
@@ -54,72 +54,417 @@
 
     <details open>
       <summary>Exposure</summary>
-      <label class="check"><input type="checkbox" data-path="controls.auto_exposure"> Auto exposure</label>
-      <label>Shutter <output data-for="controls.shutter_us"></output>
+      <div class="row">
+        <label class="check"><input type="checkbox" data-path="controls.auto_exposure"> Auto exposure</label>
+        <button type="button" class="info" popovertarget="info-exposure" aria-label="About exposure">i</button>
+      </div>
+      <label>Shutter <span class="mode-note">manual</span> <output data-for="controls.shutter_us"></output> <button type="button" class="info" popovertarget="info-shutter" aria-label="About shutter">i</button>
         <input type="range" data-path="controls.shutter_us" data-log data-min="{{.L.ShutterMin}}" data-max="{{.L.ShutterMax}}" min="0" max="1000" step="1" class="manual-exp">
       </label>
-      <label>Gain <output data-for="controls.gain"></output>
+      <label>Gain <span class="mode-note">manual</span> <output data-for="controls.gain"></output> <button type="button" class="info" popovertarget="info-gain" aria-label="About gain">i</button>
         <input type="range" data-path="controls.gain" min="{{.L.GainMin}}" max="{{.L.GainMax}}" step="0.1" class="manual-exp">
       </label>
-      <label>EV compensation <output data-for="controls.ev"></output>
+      <label>EV compensation <span class="mode-note">auto</span> <output data-for="controls.ev"></output> <button type="button" class="info" popovertarget="info-ev" aria-label="About EV compensation">i</button>
         <input type="range" data-path="controls.ev" min="{{.L.EVMin}}" max="{{.L.EVMax}}" step="0.1" class="auto-exp">
       </label>
-      <label>Metering
+      <label>Metering <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-metering" aria-label="About metering">i</button>
         <select data-path="controls.metering" class="auto-exp">{{range .Metering}}<option>{{.}}</option>{{end}}</select>
       </label>
-      <label>Exposure mode
+      <label>Exposure profile <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-profile" aria-label="About exposure profiles">i</button>
         <select data-path="controls.exposure_mode" class="auto-exp">{{range .ExposureModes}}<option>{{.}}</option>{{end}}</select>
       </label>
+      <p id="profile-desc" class="hint">–</p>
+      <div class="row readout-head"><b>Actual values</b> <button type="button" class="info" popovertarget="info-readout" aria-label="About actual exposure values">i</button></div>
       <div class="readout">
         <div>Shutter <b id="md-shutter">–</b></div>
-        <div>Gain <b id="md-gain">–</b></div>
-        <div>Colour temp. <b id="md-ct">–</b></div>
-        <div>Lux <b id="md-lux">–</b></div>
+        <div>Analogue gain <b id="md-gain">–</b></div>
+        <div>Digital gain <b id="md-dgain">–</b></div>
+        <div>Frame time <b id="md-frame">–</b></div>
+        <div>AE state <b id="md-aestate">–</b></div>
+        <div><span>Lux <button type="button" class="info" popovertarget="info-lux" aria-label="About the lux value">i</button></span> <b id="md-lux">–</b></div>
+        <div><span>Colour temp. <button type="button" class="info" popovertarget="info-wb" aria-label="About white balance">i</button></span> <b id="md-ct">–</b></div>
       </div>
+      <div id="ae-limit" class="warning small" hidden></div>
       <button id="lock" title="Copy the current automatic values into manual settings">Lock current</button>
-      <div class="focus" title="Focus figure of merit: turn the focus ring to maximise it. Click to reset the peak.">
+      <div class="focus">
         <span>Focus</span>
-        <div class="bar"><div id="focus-bar"></div><div id="focus-peak"></div></div>
         <b id="focus-val">–</b>
+        <button type="button" class="info" popovertarget="focus-info" aria-label="About the focus value">i</button>
+      </div>
+      <div id="focus-info" popover class="popover">
+        <h3>Focus value</h3>
+        <p>A <b>sharpness score</b> computed by the Pi's image processor from the
+          picture itself (libcamera <code>FocusFoM</code>). It does not come from the
+          lens: the HQ camera has no autofocus.</p>
+        <ul>
+          <li><b>Higher = sharper.</b> Turn the focus ring until the value peaks.</li>
+          <li><b>Centre only:</b> measured in the middle third of the height and the
+            middle half of the width. Put the subject there.</li>
+          <li><b>No unit or absolute scale:</b> the value depends on scene detail,
+            brightness and exposure. Compare values only for the same scene and
+            settings.</li>
+          <li><b>Noise raises it:</b> with high gain the grain counts as "detail".
+            Focus in good light, and press <i>Lock current</i> first so exposure
+            stays fixed while you turn the ring.</li>
+        </ul>
+        <p class="muted">Details: docs/DESIGN.md §3.5 ·
+          <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_core.yaml#L657-L668" target="_blank" rel="noopener">libcamera definition</a> ·
+          <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1641-L1663" target="_blank" rel="noopener">how it is computed</a></p>
+        <button type="button" popovertarget="focus-info" popovertargetaction="hide">Close</button>
       </div>
     </details>
 
     <details open>
       <summary>White balance</summary>
-      <label class="check"><input type="checkbox" data-path="controls.auto_wb"> Auto white balance</label>
-      <label>Mode
+      <div class="row">
+        <label class="check"><input type="checkbox" data-path="controls.auto_wb"> Auto white balance</label>
+        <button type="button" class="info" popovertarget="info-wb" aria-label="About white balance">i</button>
+      </div>
+      <label>Mode <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-awb-mode" aria-label="About white balance modes">i</button>
         <select data-path="controls.awb_mode" class="auto-wb">{{range .AWBModes}}<option>{{.}}</option>{{end}}</select>
       </label>
-      <label>Red gain <output data-for="controls.wb_gain_r"></output>
+      <p id="awb-desc" class="hint"></p>
+      <label>Red gain <span class="mode-note">manual</span> <output data-for="controls.wb_gain_r"></output> <button type="button" class="info" popovertarget="info-wb-gains" aria-label="About manual colour gains">i</button>
         <input type="range" data-path="controls.wb_gain_r" min="{{.L.WBGainMin}}" max="8" step="0.05" class="manual-wb">
       </label>
-      <label>Blue gain <output data-for="controls.wb_gain_b"></output>
+      <label>Blue gain <span class="mode-note">manual</span> <output data-for="controls.wb_gain_b"></output> <button type="button" class="info" popovertarget="info-wb-gains" aria-label="About manual colour gains">i</button>
         <input type="range" data-path="controls.wb_gain_b" min="{{.L.WBGainMin}}" max="8" step="0.05" class="manual-wb">
       </label>
     </details>
 
     <details>
       <summary>Image</summary>
-      <label>Brightness <output data-for="controls.brightness"></output>
+      <div class="row"><p class="hint">Processing applied by the image processor to the stream
+        and to snapshots. It does not change exposure.</p>
+        <button type="button" class="info" popovertarget="info-image" aria-label="About image processing">i</button></div>
+      <label>Brightness <output data-for="controls.brightness"></output> <button type="button" class="info" popovertarget="info-brightness" aria-label="About brightness">i</button>
         <input type="range" data-path="controls.brightness" min="{{.L.BrightnessMin}}" max="{{.L.BrightnessMax}}" step="0.05">
       </label>
-      <label>Contrast <output data-for="controls.contrast"></output>
+      <label>Contrast <output data-for="controls.contrast"></output> <button type="button" class="info" popovertarget="info-contrast" aria-label="About contrast">i</button>
         <input type="range" data-path="controls.contrast" min="0" max="{{.ContrastMax}}" step="0.05">
       </label>
-      <label>Saturation <output data-for="controls.saturation"></output>
+      <label>Saturation <output data-for="controls.saturation"></output> <button type="button" class="info" popovertarget="info-saturation" aria-label="About saturation">i</button>
         <input type="range" data-path="controls.saturation" min="0" max="{{.SaturationMax}}" step="0.05">
       </label>
-      <label>Sharpness <output data-for="controls.sharpness"></output>
+      <label>Sharpness <output data-for="controls.sharpness"></output> <button type="button" class="info" popovertarget="info-sharpness" aria-label="About sharpness">i</button>
         <input type="range" data-path="controls.sharpness" min="0" max="{{.SharpnessMax}}" step="0.1">
       </label>
-      <label>Denoise
-        <select data-path="controls.denoise">{{range .DenoiseModes}}<option>{{.}}</option>{{end}}</select>
+      <label>Denoise <button type="button" class="info" popovertarget="info-denoise" aria-label="About denoise">i</button>
+        <select data-path="controls.denoise">
+          <option value="auto">auto (= fast)</option>
+          <option value="off">off</option>
+          <option value="minimal">minimal</option>
+          <option value="fast">fast</option>
+          <option value="high_quality">high quality</option>
+        </select>
       </label>
+      <p id="denoise-desc" class="hint"></p>
     </details>
 
     <button id="reset">Reset to defaults</button>
   </aside>
 </main>
+<!-- Info popups (HTML popover API). They explain behaviour in general and name
+     the parameter in the camera's libcamera tuning file that sets the actual
+     values (e.g. rpi.agc → exposure_modes). Background: docs/DESIGN.md §3.5-§3.10. -->
+<div id="info-exposure" popover class="popover">
+  <h3>How exposure works</h3>
+  <p><b>Auto:</b> each frame, the auto-exposure algorithm (<code>rpi.agc</code>)
+    measures brightness, multiplies its brightness target by 2<sup>EV</sup>, and
+    computes the total exposure (shutter × gain) needed. It raises the
+    <b>shutter first, then the gain</b>, step by step along the selected
+    <i>exposure profile</i>. Two limits cap it: the <b>frame time</b> (1/fps)
+    caps the shutter, and the profile's last step caps shutter and gain. Past
+    the sensor's analogue limit, digital gain makes up the rest.</p>
+  <p><b>Manual:</b> shutter and gain are used as set; EV, metering and profile
+    have no effect. A shutter longer than the frame time lowers the frame rate.</p>
+  <p class="muted">Parameter names in these popups refer to the camera's
+    libcamera tuning file. For the HQ camera on a Pi 4 that is usually
+    <code>/usr/share/libcamera/ipa/rpi/vc4/imx477.json</code>; libcamera logs the
+    path as "Using tuning file" (see the camweb log). Details: docs/DESIGN.md §3.6</p>
+  <button type="button" popovertarget="info-exposure" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-fps" popover class="popover">
+  <h3>Frame rate</h3>
+  <p>The frame time (1/fps) is also the <b>longest possible shutter</b>, in auto
+    and manual mode: at 30 fps the shutter cannot exceed about 33 ms.</p>
+  <ul>
+    <li><b>Auto, dark scene:</b> a lower frame rate lets auto exposure use a
+      longer shutter (up to the profile's last shutter step) before raising the
+      gain.</li>
+    <li><b>Manual:</b> a shutter longer than the frame time lowers the frame
+      rate to fit.</li>
+    <li>Changing the frame rate restarts the encoder (brief interruption).</li>
+  </ul>
+  <button type="button" popovertarget="info-fps" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-shutter" popover class="popover">
+  <h3>Shutter (manual)</h3>
+  <p>Exposure time per frame, shown as 1/x s. It is used only when auto exposure
+    is off. A shutter longer than the frame time (1/fps) lowers the frame rate
+    to fit, and the encoder restarts. A longer shutter gives a brighter image
+    but more motion blur.</p>
+  <button type="button" popovertarget="info-shutter" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-gain" popover class="popover">
+  <h3>Gain (manual)</h3>
+  <p>Sensor amplification (analogue gain; 1 = base sensitivity). It is used only
+    when auto exposure is off. Higher gain gives a brighter but noisier image.
+    The sensor maximum, from libcamera's <code>AnalogueGain</code> control range,
+    is <b data-fill="sensor-max-gain">reported by the camera</b>.</p>
+  <button type="button" popovertarget="info-gain" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-ev" popover class="popover">
+  <h3>EV compensation (auto only)</h3>
+  <p>Multiplies the brightness target of auto exposure by 2<sup>EV</sup> (+1 =
+    twice as bright, −1 = half). It is <b>disabled in manual mode</b>.</p>
+  <ul>
+    <li>The base target is <code>rpi.agc → y_target</code> (by lux), scaled by
+      <code>rpi.agc → base_ev</code>. libcamera caps the result at 90 % of full
+      scale, so EV above about log<sub>2</sub>(0.9 / y_target) has no further
+      effect.</li>
+    <li>When auto exposure is at its limits (dark scene: shutter at the frame
+      time, gain at the profile's last step), EV has <b>no effect</b>: the
+      target is already out of reach.</li>
+  </ul>
+  <button type="button" popovertarget="info-ev" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-metering" popover class="popover">
+  <h3>Metering (auto only)</h3>
+  <p>Decides <b>which parts of the image</b> auto exposure looks at when it judges
+    brightness. The Pi 4 splits the frame into 15 zones (numbered below).
+    Auto exposure averages the brightness, each pixel counted with its zone's
+    <b>weight</b>, and steers that average to its target. Weight 0 means the
+    zone is ignored.</p>
+  <div data-fill="metering-zones"></div>
+  <p>Each mode is a list of 15 weights in zone order 0–14:
+    <code>rpi.agc → metering_modes → centre-weighted / spot / matrix → weights</code>.
+    As the names say: <b>centre</b> favours the middle, <b>spot</b> a small
+    central area, <b>matrix</b> the whole frame.</p>
+  <p>Independently of metering, histogram rules
+    (<code>rpi.agc → constraint_modes</code>; the first mode in the file is used)
+    can raise or lower exposure, for example to keep some pixels bright. In
+    manual mode metering has no effect.</p>
+  <p class="muted">Zone layout from the Raspberry Pi tuning guide, Figure 9 (sizes
+    approximate). Details: docs/DESIGN.md §3.8</p>
+  <button type="button" popovertarget="info-metering" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-profile" popover class="popover">
+  <h3>Exposure profiles (auto only)</h3>
+  <p>A profile is a list of steps: shutter times (µs) and gains, in
+    <code>rpi.agc → exposure_modes → normal / short / long → shutter, gain</code>.
+    To brighten the image, auto exposure raises the shutter to the next step,
+    then the gain to the next step, and so on. The last step is the maximum.
+    The shutter is also capped by the frame time.</p>
+  <ul>
+    <li><b>short</b> reaches higher gain sooner (less motion blur, more
+      noise).</li>
+    <li><b>long</b> usually allows the longest shutter, which only helps if the
+      frame rate is low enough.</li>
+  </ul>
+  <p class="muted">Details: docs/DESIGN.md §3.6</p>
+  <button type="button" popovertarget="info-profile" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-readout" popover class="popover">
+  <h3>Actual values</h3>
+  <p>What the camera really used for recent frames (libcamera metadata, about
+    twice a second). Compare them with your settings: a difference means a value
+    was clamped.</p>
+  <ul>
+    <li><b>Frame time</b>: actual frame duration; it is the shutter's upper limit.</li>
+    <li><b>Digital gain</b>: extra gain applied by the image processor; 1.0 normally.</li>
+    <li><b>AE state</b>: <i>Idle</i> (manual), <i>Searching</i> or <i>Converged</i>.
+      Converged only means the values stopped changing; it is also reported
+      when auto exposure is stuck at its limits.</li>
+  </ul>
+  <p>A hint appears when the shutter has reached the frame time: from then on
+    only gain can brighten the image, up to the last gain step of the profile
+    (<code>rpi.agc → exposure_modes</code>). The profile's own shutter limit can
+    be lower than the frame time at low frame rates; the UI cannot see that.</p>
+  <button type="button" popovertarget="info-readout" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-lux" popover class="popover">
+  <h3>Lux</h3>
+  <p>An <b>estimate of scene brightness</b> worked out by libcamera
+    (<code>rpi.lux</code>) from the picture. The camera has no light sensor. It
+    compares the current frame with a reference frame from calibration:</p>
+  <p><code>lux = reference_lux × (reference_shutter_speed / shutter) ×
+    (reference_gain / gain) × (Y / reference_Y)</code></p>
+  <p>The reference values are <code>rpi.lux → reference_*</code> in the tuning
+    file. Y is the average brightness of the whole frame.</p>
+  <ul>
+    <li><b>Relative, not absolute:</b> the formula assumes the lens and aperture
+      used for calibration. On your lens, closing the aperture one stop halves
+      the value.</li>
+    <li><b>Reflected light:</b> a white wall reads higher than dark cloth under
+      the same light.</li>
+    <li>libcamera also uses it: auto exposure's target (<code>rpi.agc →
+      y_target</code>) and auto white balance's priors (<code>rpi.awb →
+      priors</code>) depend on lux.</li>
+  </ul>
+  <p class="muted">Details: docs/DESIGN.md §3.7</p>
+  <button type="button" popovertarget="info-lux" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-image" popover class="popover">
+  <h3>Image processing</h3>
+  <p>These settings change how the image processor renders the picture:</p>
+  <ul>
+    <li><b>Brightness and contrast</b> reshape the tone curve
+      (<code>rpi.contrast</code>).</li>
+    <li><b>Saturation</b> scales colour in the colour-correction matrix
+      (<code>rpi.ccm</code>).</li>
+    <li><b>Sharpness</b> and <b>denoise</b> set the strength of the sharpening
+      (<code>rpi.sharpen</code>) and noise-reduction (<code>rpi.sdn</code>)
+      blocks.</li>
+  </ul>
+  <p>They apply live, to the stream and snapshots, in auto and manual exposure.
+    They <b>do not change exposure</b>: no extra light reaches the sensor and no
+    hidden detail is recovered. For a brighter exposure use EV, shutter or
+    gain.</p>
+  <p class="muted">Details: docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-image" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-brightness" popover class="popover">
+  <h3>Brightness</h3>
+  <p>Shifts the output levels up or down after the tone curve: every value moves
+    by <code>brightness × full scale</code> (−1 … +1, default 0).</p>
+  <ul>
+    <li>Positive values lift blacks towards grey (washed out); negative values
+      crush shadows. Values are clipped at black and white.</li>
+    <li>This is not exposure: no dark detail is recovered. To brighten a dark
+      scene use EV, shutter or gain.</li>
+  </ul>
+  <p class="muted">Applied by <code>rpi.contrast</code> on top of
+    <code>rpi.contrast → gamma_curve</code>. Details: docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-brightness" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-contrast" popover class="popover">
+  <h3>Contrast</h3>
+  <p>Scales the tone curve around mid-grey: <code>(value − 50 %) × contrast + 50 %</code>
+    (default 1).</p>
+  <ul>
+    <li>&gt; 1: darker darks and brighter brights, with more clipping at both
+      ends.</li>
+    <li>&lt; 1: flatter image; 0 is uniform grey.</li>
+    <li>Separately, libcamera can apply an automatic <b>contrast
+      enhancement</b> that stretches the darkest and brightest parts of the
+      histogram while keeping the median. It is switched by
+      <code>rpi.contrast → ce_enable</code> and tuned by <code>lo_histogram,
+      lo_level, lo_max, hi_histogram, hi_level, hi_max</code>. The UI cannot
+      change it.</li>
+  </ul>
+  <p class="muted">Base curve: <code>rpi.contrast → gamma_curve</code>. Details: docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-contrast" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-saturation" popover class="popover">
+  <h3>Saturation</h3>
+  <p>Scales colour intensity (chroma) inside the colour-correction matrix;
+    brightness is unchanged (default 1).</p>
+  <ul>
+    <li>0 = black and white; 1 = as calibrated; 2 = twice the colour
+      intensity.</li>
+    <li>The matrix itself is chosen by colour temperature from
+      <code>rpi.ccm → ccms</code>. An optional <code>rpi.ccm → saturation</code>
+      curve can also vary saturation with lux.</li>
+  </ul>
+  <p class="muted">Details: docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-saturation" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-sharpness" popover class="popover">
+  <h3>Sharpness</h3>
+  <p>Strength of the image processor's sharpening filter (default 1, 0 = off).
+    For a setting <i>s</i>, the filter's strength is multiplied by <i>s</i>, its
+    limit by √<i>s</i>, and its threshold divided by √<i>s</i>, so higher values
+    also sharpen finer, lower-contrast detail.</p>
+  <ul>
+    <li>The base values are <code>rpi.sharpen → threshold, strength, limit</code>.</li>
+    <li>In binned sensor modes (this app uses a 2×2-binned mode) libcamera tones
+      the sharpening down.</li>
+    <li>Too much sharpening exaggerates noise and edge halos, and costs
+      bitrate. It does not affect the focus value.</li>
+  </ul>
+  <p class="muted">Details: docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-sharpness" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-denoise" popover class="popover">
+  <h3>Denoise</h3>
+  <p>The Pi 4 image processor has two noise filters:</p>
+  <ul>
+    <li><b>Spatial denoise</b> on the raw sensor data. Its strength follows the
+      sensor noise model (<code>rpi.noise</code>), so it gets stronger
+      automatically at higher gain. It is tuned by <code>rpi.sdn → deviation,
+      strength</code>.</li>
+    <li><b>Colour denoise</b> removes coloured blotches, in a <i>fast</i> or a
+      <i>high quality</i> version.</li>
+  </ul>
+  <table>
+    <tr><th>setting</th><th>spatial</th><th>colour</th></tr>
+    <tr><td>off</td><td>off</td><td>off</td></tr>
+    <tr><td>minimal</td><td>on</td><td>off</td></tr>
+    <tr><td>fast, auto</td><td>on</td><td>fast</td></tr>
+    <tr><td>high quality</td><td>on</td><td>high quality</td></tr>
+  </table>
+  <ul>
+    <li><b>auto</b> sends <i>fast</i>, the same as Picamera2's video default.</li>
+    <li>More denoise gives a cleaner but softer image; in low light it also
+      saves bitrate. <i>High quality</i> costs more processing time.</li>
+    <li>Fast colour denoise works with the processor's second output, which this
+      app also uses for the stream. Its effect at our stream size is not
+      documented. Compare the settings at high gain.</li>
+  </ul>
+  <p class="muted">Mode mapping is in libcamera's Pi 4 code (vc4.cpp). Details: docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-denoise" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-wb" popover class="popover">
+  <h3>White balance</h3>
+  <p>Makes neutral (grey/white) objects look neutral under different light. It
+    multiplies the red and blue channels by <b>colour gains</b> (green stays at
+    1). The colour-correction matrix (<code>rpi.ccm</code>) is then chosen for
+    the resulting colour temperature.</p>
+  <p><b>Auto</b> (<code>rpi.awb</code>, Bayesian search):</p>
+  <ul>
+    <li>The image is split into 16 × 12 zones; zones that are too dark or have
+      too few pixels are ignored (<code>min_G</code>, <code>min_pixels</code>).</li>
+    <li>For colour temperatures in the selected mode's range, it checks how grey
+      the zones would become with the gains calibrated for that temperature
+      (<code>ct_curve</code>). It weighs that against how likely each light is at
+      the current lux level (<code>priors</code>).</li>
+    <li>It refines slightly off the calibrated curve for green/magenta tints
+      (<code>transverse_pos</code>, <code>transverse_neg</code>), and moves to
+      the result smoothly (<code>speed</code>, <code>frame_period</code>).</li>
+  </ul>
+  <p><b>Manual:</b> the red and blue gains are used as set; the colour
+    temperature is estimated back from them.</p>
+  <p><i>Colour temp.</i> in Actual values is the temperature libcamera is using
+    now. A large uniform coloured area (a red wall) can fool auto white
+    balance; then use a fixed mode, or <i>Lock current</i> while a neutral scene
+    is in view.</p>
+  <p class="muted">Parameters: <code>rpi.awb → …</code> in the tuning file. Details: docs/DESIGN.md §3.10</p>
+  <button type="button" popovertarget="info-wb" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-awb-mode" popover class="popover">
+  <h3>White balance modes (auto only)</h3>
+  <p>A mode limits the <b>range of colour temperatures</b> auto white balance may
+    choose: <code>rpi.awb → modes → &lt;mode&gt; → lo, hi</code> (kelvin). A
+    narrow range (e.g. <i>daylight</i>) keeps colours stable when the scene
+    content would otherwise mislead it. <i>auto</i> is the widest range.</p>
+  <p class="muted">Details: docs/DESIGN.md §3.10</p>
+  <button type="button" popovertarget="info-awb-mode" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-wb-gains" popover class="popover">
+  <h3>Manual colour gains</h3>
+  <p>Used when auto white balance is off. Each value multiplies its channel
+    relative to green (1.0). Raise <b>red</b> if the image is too blue/cyan, and
+    raise <b>blue</b> if it is too yellow/orange. Warm light (bulbs) needs
+    a lower red and a higher blue gain than daylight.</p>
+  <p>The calibrated gains for a light of temperature T are
+    <code>sensitivity_r / r(T)</code> and <code>sensitivity_b / b(T)</code>,
+    from <code>rpi.awb → ct_curve</code> (rows of T, r, b).</p>
+  <p>The easiest way to set them: point at a neutral scene in auto mode, then
+    press <i>Lock current</i>.</p>
+  <p class="muted">Details: docs/DESIGN.md §3.10</p>
+  <button type="button" popovertarget="info-wb-gains" popovertargetaction="hide">Close</button>
+</div>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="/static/app.js"></script>
 </body>

@@ -114,6 +114,48 @@ spike/             M0 hardware spike script
 deploy/            systemd unit
 ```
 
+## Focusing the HQ lens
+
+The **Focus** number under Exposure is a sharpness score computed by the image
+processor (libcamera `FocusFoM`); the lens itself reports nothing. Turn the
+focus ring until the number peaks.
+- It is measured in the centre of the frame only.
+- It has no absolute scale: compare values for the same scene and settings.
+- Noise at high gain inflates it, so lock exposure first with *Lock current*.
+
+The ⓘ button next to it explains the same; details and source links are in
+[DESIGN.md §3.5](docs/DESIGN.md).
+
+## Exposure: EV, frame rate, shutter, gain
+
+- **Auto mode:** brightness target × 2^EV, then shutter (up to the frame time
+  and the profile's maximum), then gain (up to the profile's maximum, 16 for
+  the HQ camera).
+- In a dark scene auto exposure hits both limits, and EV then has no effect.
+  The UI warns about this under *Actual values*. Lower the frame rate, use the
+  "long" profile at ≤ 8 fps, or switch to manual.
+- **Manual mode** uses shutter and gain as set. EV, metering and profile are
+  disabled.
+- **Metering** chooses which of the 15 Pi 4 zones count when auto exposure
+  judges brightness: centre-weighted, spot or matrix. The ⓘ popup shows the
+  zone layout.
+
+Each control has an ⓘ popup. Popups explain the behaviour in general and name
+the parameter in the camera's libcamera tuning file that sets the actual
+values, for example `rpi.agc → exposure_modes`. libcamera logs which file it
+uses ("Using tuning file …", in the camweb log); for the HQ camera on a Pi 4 it
+is usually `/usr/share/libcamera/ipa/rpi/vc4/imx477.json`. Details with source
+links are in [DESIGN.md §3.6](docs/DESIGN.md).
+
+**Image** settings (brightness, contrast, saturation, sharpness, denoise) only
+change how the picture is rendered, not the exposure. Denoise "auto" is
+Picamera2's video default, *fast*: spatial plus fast colour denoise. See
+DESIGN.md §3.9.
+
+**White balance:** auto picks a colour temperature within the selected mode's
+range (`rpi.awb → modes`), guided by the scene and the lux level. Manual uses
+red/blue gains; *Lock current* copies the auto gains (DESIGN.md §3.10).
+
 ## Troubleshooting
 
 - **"WebCodecs not available"**: see the secure-context section above.

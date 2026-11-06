@@ -98,7 +98,7 @@ encoders on both sides emit single-line JSON by default).
 |---|---|---|
 | `hello` | see §3.4 | first message on connect |
 | `state` | `{"state": "idle"\|"starting"\|"streaming"\|"reconfiguring"\|"error", "detail": "..."}` | on every change |
-| `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "FocusFoM": 1234, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
+| `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "FocusFoM": 1234, "AeState": 2, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
 | `stats` | `{"fps": 30.0, "frames": 12345, "latency_ms": 45.2}` (`latency_ms`: mean sensor timestamp → socket write over recent frames, when known) | 1 Hz |
 | `error` | `{"code": -32003, "message": "..."}` | asynchronous errors (for example the encoder failed) |
 
