@@ -126,6 +126,20 @@ focus ring until the number peaks.
 The ⓘ button next to it explains the same; details and source links are in
 [DESIGN.md §3.5](docs/DESIGN.md).
 
+## Exposure: EV, frame rate, shutter, gain
+
+- **Auto mode:** brightness target × 2^EV, then shutter (up to the frame time
+  and the profile's maximum), then gain (up to the profile's maximum, 16 for
+  the HQ camera).
+- In a dark scene auto exposure hits both limits, and EV then has no effect.
+  The UI warns about this under *Actual values*. Lower the frame rate, use the
+  "long" profile at ≤ 8 fps, or switch to manual.
+- **Manual mode** uses shutter and gain as set. EV, metering and profile are
+  disabled.
+
+Each control has an ⓘ popup; details with source links are in
+[DESIGN.md §3.6](docs/DESIGN.md).
+
 ## Troubleshooting
 
 - **"WebCodecs not available"**: see the secure-context section above.

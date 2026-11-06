@@ -35,6 +35,25 @@ type Hello struct {
 	Libcamera   string     `json:"libcamera"`
 	Camera      CameraInfo `json:"camera"`
 	Features    []string   `json:"features"`
+	Tuning      *Tuning    `json:"tuning,omitempty"` // nil if the tuning file could not be read
+}
+
+// Tuning is the exposure-related part of the libcamera tuning file in use
+// (rpi.agc). libcamera's camera API does not expose it; the helper reads the
+// file the IPA loads for the sensor.
+type Tuning struct {
+	File           string                     `json:"file"`
+	ExposureModes  map[string]ExposureProfile `json:"exposure_modes"`
+	MeteringModes  []string                   `json:"metering_modes"`
+	YTarget        []float64                  `json:"y_target"` // pairs: lux, target brightness (0..1)
+	MaxDigitalGain float64                    `json:"max_digital_gain"`
+}
+
+// ExposureProfile lists the shutter (µs) and gain steps auto exposure walks
+// through, in order.
+type ExposureProfile struct {
+	Shutter []float64 `json:"shutter"`
+	Gain    []float64 `json:"gain"`
 }
 
 // CameraInfo describes the camera.

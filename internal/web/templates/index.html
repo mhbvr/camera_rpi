@@ -38,7 +38,7 @@
           {{range .StreamSizes}}<option value="{{index . 0}}x{{index . 1}}">{{index . 0}}×{{index . 1}}</option>{{end}}
         </select>
       </label>
-      <label>Frame rate <output data-for="controls.fps"></output> fps <span class="interrupts">interrupts stream</span>
+      <label>Frame rate <output data-for="controls.fps"></output> fps <span class="interrupts">interrupts stream</span> <button type="button" class="info" popovertarget="info-fps" aria-label="About frame rate">i</button>
         <input type="range" data-path="controls.fps" min="{{.L.FPSMin}}" max="{{.L.FPSMax}}" step="1">
       </label>
       <label>Bitrate <output data-for="encoder.bitrate"></output> Mbit/s <span class="interrupts">interrupts stream</span>
@@ -54,28 +54,37 @@
 
     <details open>
       <summary>Exposure</summary>
-      <label class="check"><input type="checkbox" data-path="controls.auto_exposure"> Auto exposure</label>
-      <label>Shutter <output data-for="controls.shutter_us"></output>
+      <div class="row">
+        <label class="check"><input type="checkbox" data-path="controls.auto_exposure"> Auto exposure</label>
+        <button type="button" class="info" popovertarget="info-exposure" aria-label="About exposure">i</button>
+      </div>
+      <label>Shutter <span class="mode-note">manual</span> <output data-for="controls.shutter_us"></output> <button type="button" class="info" popovertarget="info-shutter" aria-label="About shutter">i</button>
         <input type="range" data-path="controls.shutter_us" data-log data-min="{{.L.ShutterMin}}" data-max="{{.L.ShutterMax}}" min="0" max="1000" step="1" class="manual-exp">
       </label>
-      <label>Gain <output data-for="controls.gain"></output>
+      <label>Gain <span class="mode-note">manual</span> <output data-for="controls.gain"></output> <button type="button" class="info" popovertarget="info-gain" aria-label="About gain">i</button>
         <input type="range" data-path="controls.gain" min="{{.L.GainMin}}" max="{{.L.GainMax}}" step="0.1" class="manual-exp">
       </label>
-      <label>EV compensation <output data-for="controls.ev"></output>
+      <label>EV compensation <span class="mode-note">auto</span> <output data-for="controls.ev"></output> <button type="button" class="info" popovertarget="info-ev" aria-label="About EV compensation">i</button>
         <input type="range" data-path="controls.ev" min="{{.L.EVMin}}" max="{{.L.EVMax}}" step="0.1" class="auto-exp">
       </label>
-      <label>Metering
+      <label>Metering <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-metering" aria-label="About metering">i</button>
         <select data-path="controls.metering" class="auto-exp">{{range .Metering}}<option>{{.}}</option>{{end}}</select>
       </label>
-      <label>Exposure mode
+      <label>Exposure profile <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-profile" aria-label="About exposure profiles">i</button>
         <select data-path="controls.exposure_mode" class="auto-exp">{{range .ExposureModes}}<option>{{.}}</option>{{end}}</select>
       </label>
+      <p id="profile-desc" class="hint">–</p>
+      <div class="row readout-head"><b>Actual values</b> <button type="button" class="info" popovertarget="info-readout" aria-label="About actual exposure values">i</button></div>
       <div class="readout">
         <div>Shutter <b id="md-shutter">–</b></div>
-        <div>Gain <b id="md-gain">–</b></div>
-        <div>Colour temp. <b id="md-ct">–</b></div>
+        <div>Analogue gain <b id="md-gain">–</b></div>
+        <div>Digital gain <b id="md-dgain">–</b></div>
+        <div>Frame time <b id="md-frame">–</b></div>
+        <div>AE state <b id="md-aestate">–</b></div>
         <div>Lux <b id="md-lux">–</b></div>
+        <div>Colour temp. <b id="md-ct">–</b></div>
       </div>
+      <div id="ae-limit" class="warning small" hidden></div>
       <button id="lock" title="Copy the current automatic values into manual settings">Lock current</button>
       <div class="focus">
         <span>Focus</span>
@@ -141,6 +150,107 @@
     <button id="reset">Reset to defaults</button>
   </aside>
 </main>
+<!-- Info popups (HTML popover API). Values in [data-fill] are filled from the
+     camera's tuning data by app.js. Background: docs/DESIGN.md §3.6. -->
+<div id="info-exposure" popover class="popover">
+  <h3>How exposure works</h3>
+  <p><b>Auto:</b> each frame, the auto-exposure algorithm measures brightness,
+    multiplies its brightness target by 2<sup>EV</sup>, and computes the total
+    exposure (shutter × gain) needed. It raises the <b>shutter first, then the
+    gain</b>, step by step along the selected <i>exposure profile</i>. Two limits
+    cap it: the <b>frame time</b> (1/fps) caps the shutter, and the profile's last
+    step caps both. Past the analogue limit, digital gain makes up the
+    rest.</p>
+  <p><b>Manual:</b> shutter and gain are used as set; EV, metering and profile
+    have no effect. A shutter longer than the frame time lowers the frame rate.</p>
+  <p>When auto exposure reaches its limits, a warning appears under
+    <i>Actual values</i>.</p>
+  <p class="muted">Details: docs/DESIGN.md §3.6</p>
+  <button type="button" popovertarget="info-exposure" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-fps" popover class="popover">
+  <h3>Frame rate</h3>
+  <p>The frame time (1/fps) is also the <b>longest possible shutter</b>: at 30 fps
+    the shutter cannot exceed about 33 ms, in auto or manual mode.</p>
+  <ul>
+    <li><b>Auto, dark scene:</b> a lower frame rate lets auto exposure use a longer
+      shutter (up to the profile maximum) before raising the gain.</li>
+    <li><b>Manual:</b> a shutter longer than the frame time lowers the frame rate
+      to fit.</li>
+    <li>Changing the frame rate restarts the encoder (brief interruption).</li>
+  </ul>
+  <button type="button" popovertarget="info-fps" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-shutter" popover class="popover">
+  <h3>Shutter (manual)</h3>
+  <p>Exposure time per frame, shown as 1/x s. It is used only when auto exposure
+    is off. A shutter longer than the frame time (1/fps) lowers the frame rate
+    to fit; the encoder restarts. Longer shutter = brighter, but more motion
+    blur.</p>
+  <button type="button" popovertarget="info-shutter" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-gain" popover class="popover">
+  <h3>Gain (manual)</h3>
+  <p>Sensor amplification (analogue gain; 1 = base sensitivity). It is used only
+    when auto exposure is off. Higher gain = brighter, but noisier. The sensor
+    maximum is <b data-fill="sensor-max-gain">≈22</b>.</p>
+  <button type="button" popovertarget="info-gain" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-ev" popover class="popover">
+  <h3>EV compensation (auto only)</h3>
+  <p>Multiplies the brightness target of auto exposure by 2<sup>EV</sup> (+1 =
+    twice as bright, −1 = half). It is <b>disabled in manual mode</b>.</p>
+  <ul>
+    <li>The target is capped at 90 % of full scale, so values above about
+      <b data-fill="ev-cap">+2.4</b> have no further effect.</li>
+    <li>When auto exposure is at its limits (dark scene: shutter at the frame time,
+      gain at the profile maximum), EV has <b>no effect</b>: the target is
+      already out of reach. A warning under <i>Actual values</i> shows this.</li>
+  </ul>
+  <button type="button" popovertarget="info-ev" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-metering" popover class="popover">
+  <h3>Metering (auto only)</h3>
+  <p>Which part of the image auto exposure measures brightness in:</p>
+  <ul>
+    <li><b>centre</b>: centre-weighted, favours the middle of the frame;</li>
+    <li><b>spot</b>: only a small central area;</li>
+    <li><b>matrix</b>: the whole frame evenly.</li>
+  </ul>
+  <p class="muted">Weights come from the camera tuning file.</p>
+  <button type="button" popovertarget="info-metering" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-profile" popover class="popover">
+  <h3>Exposure profiles (auto only)</h3>
+  <p>A profile is a list of steps. To brighten the image, auto exposure raises the
+    shutter to the next step, then the gain to the next step, and so on. The last
+    step is the maximum. The shutter is also capped by the frame time.</p>
+  <div data-fill="profile-table">Profile data not available (no tuning data from the camera).</div>
+  <p class="muted">Read at startup from the camera's tuning file
+    <span data-fill="tuning-file"></span>. libcamera's camera API does not expose
+    these profiles.</p>
+  <button type="button" popovertarget="info-profile" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-readout" popover class="popover">
+  <h3>Actual values</h3>
+  <p>What the camera really used for recent frames (libcamera metadata, about
+    twice a second). Compare them with your settings: a difference means a value
+    was clamped.</p>
+  <ul>
+    <li><b>Frame time</b>: actual frame duration; it is the shutter's upper limit.</li>
+    <li><b>Digital gain</b>: extra gain applied by the image processor; 1.0 normally.</li>
+    <li><b>AE state</b>: <i>Idle</i> (manual), <i>Searching</i> or <i>Converged</i>.
+      Converged only means the values stopped changing; it is also reported
+      when auto exposure is stuck at its limits.</li>
+  </ul>
+  <p><b>At the limit</b> means shutter ≈ min(frame time, profile maximum) and gain
+    ≈ profile maximum. Then the image cannot get brighter in auto mode: lower
+    the frame rate, use the "long" profile with a low enough frame rate, or
+    switch to manual.</p>
+  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L763-L786" target="_blank" rel="noopener">limit logic</a> ·
+    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L527-L564" target="_blank" rel="noopener">"converged" logic</a></p>
+  <button type="button" popovertarget="info-readout" popovertargetaction="hide">Close</button>
+</div>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="/static/app.js"></script>
 </body>

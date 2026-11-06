@@ -37,10 +37,21 @@ button:disabled { opacity: .5; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .panel > button { margin-top: 12px; }
 .interrupts { font-size: 11px; color: var(--danger); margin-left: 4px; }
-.readout { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; margin: 10px 0 6px; color: var(--muted); }
+.readout { display: grid; grid-template-columns: 1fr; gap: 2px; margin: 4px 0 6px; color: var(--muted); }
+.readout div { display: flex; justify-content: space-between; gap: 12px; }
 .readout b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .focus { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); }
 .focus b { color: var(--text); font-size: 18px; font-variant-numeric: tabular-nums; }
+.row { display: flex; gap: 8px; align-items: center; margin: 8px 0 2px; }
+.row label.check { margin: 0; }
+.readout-head { margin-top: 12px; }
+.mode-note { font-size: 11px; padding: 0 5px; border-radius: 3px; background: var(--line); color: var(--muted); }
+label button.info { margin-left: 2px; vertical-align: middle; }
+.hint { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+.warning.small { font-size: 12px; margin: 8px 0; }
+.popover table { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+.popover th, .popover td { border: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+.popover tr.selected td { background: var(--line); font-weight: 600; }
 button.info { width: 22px; height: 22px; padding: 0; border-radius: 50%; font: italic 600 13px/20px Georgia, serif; }
 .popover { max-width: min(440px, calc(100vw - 32px)); padding: 16px 20px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); color: var(--text); box-shadow: 0 8px 32px rgba(0,0,0,.3); }

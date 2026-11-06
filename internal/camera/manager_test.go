@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -136,6 +137,19 @@ func TestManagerFlow(t *testing.T) {
 		t.Fatalf("configure call %s %+v", c.Method, cp)
 	}
 	waitFor(t, func() bool { m.mu.RLock(); defer m.mu.RUnlock(); return m.sess != nil })
+
+	// new viewers get the sticky "camera" event (exposure profile info for the UI)
+	sub := hub.Subscribe()
+	gotCamera := false
+	for len(sub.C) > 0 {
+		if msg := <-sub.C; strings.Contains(string(msg.Wire[stream.HeaderSize:]), `"event":"camera"`) {
+			gotCamera = true
+		}
+	}
+	hub.Unsubscribe(sub)
+	if !gotCamera {
+		t.Fatal("no camera event for new viewers")
+	}
 
 	// live change → set_controls with only the changed control
 	kind, _, err := m.Apply(ctx, []byte(`{"controls":{"contrast":2}}`))

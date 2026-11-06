@@ -48,7 +48,7 @@ ENCODER_ASSUMED_FPS = 30.0
 MAX_ENCODER_BITRATE = 25_000_000
 METADATA_KEYS = ("ExposureTime", "AnalogueGain", "DigitalGain", "ColourGains",
                  "ColourTemperature", "Lux", "FrameDuration", "FocusFoM",
-                 "SensorTimestamp")
+                 "AeState", "SensorTimestamp")
 
 log = logging.getLogger("camhelper")
 
@@ -249,6 +249,7 @@ class Camera:
                 info["values"] = vals
             controls[name] = info
         props = self.picam2.camera_properties
+        tuning = read_tuning(props.get("Model", ""))
         try:
             lc_version = __import__("libcamera").__version__
         except Exception:  # noqa: BLE001
@@ -266,6 +267,7 @@ class Camera:
                 "controls": controls,
             },
             "features": ["snapshot", "metadata", "set_encoder"],
+            "tuning": tuning,
         }
 
     def state(self, state, detail=None):
@@ -539,6 +541,37 @@ def _stream_info(s):
         if k in s and s[k] is not None:
             out["size" if k == "output_size" else k] = s[k] if not isinstance(s[k], tuple) else list(s[k])
     return out
+
+
+def read_tuning(model):
+    """Exposure-related data from the tuning file libcamera loads for this
+    sensor (<model>.json in the standard IPA data directories), read with
+    Picamera2.load_tuning_file(). libcamera's camera API does not expose the
+    auto-exposure profiles, so the tuning file is the only source. Returns
+    None if the file cannot be read."""
+    if not model:
+        return None
+    try:
+        from picamera2 import Picamera2
+        name = model + ".json"
+        tuning = Picamera2.load_tuning_file(name)
+        agc = Picamera2.find_tuning_algo(tuning, "rpi.agc")
+    except Exception as e:  # noqa: BLE001
+        log.warning("cannot read tuning file for %s: %s", model, e)
+        return None
+    ch = agc["channels"][0] if isinstance(agc.get("channels"), list) and agc["channels"] else agc
+    modes = {}
+    for k, v in (ch.get("exposure_modes") or {}).items():
+        # Older tuning files call it "shutter", newer ones "exposure_time".
+        shutter = v.get("shutter") or v.get("exposure_time") or []
+        modes[k] = {"shutter": list(shutter), "gain": list(v.get("gain") or [])}
+    return {
+        "file": name,
+        "exposure_modes": modes,
+        "metering_modes": list((ch.get("metering_modes") or {}).keys()),
+        "y_target": list(ch.get("y_target") or []),
+        "max_digital_gain": float(ch.get("max_digital_gain", 4.0)),
+    }
 
 
 def _enum_values(name):

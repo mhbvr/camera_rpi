@@ -98,7 +98,7 @@ encoders on both sides emit single-line JSON by default).
 |---|---|---|
 | `hello` | see §3.4 | first message on connect |
 | `state` | `{"state": "idle"\|"starting"\|"streaming"\|"reconfiguring"\|"error", "detail": "..."}` | on every change |
-| `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "FocusFoM": 1234, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
+| `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "FocusFoM": 1234, "AeState": 2, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
 | `stats` | `{"fps": 30.0, "frames": 12345, "latency_ms": 45.2}` (`latency_ms`: mean sensor timestamp → socket write over recent frames, when known) | 1 Hz |
 | `error` | `{"code": -32003, "message": "..."}` | asynchronous errors (for example the encoder failed) |
 
@@ -206,12 +206,30 @@ No params. Respond with `{}`, release the camera, exit 0.
       "...": {}
     }
   },
-  "features": ["snapshot", "metadata", "set_encoder"]
+  "features": ["snapshot", "metadata", "set_encoder"],
+  "tuning": {
+    "file": "imx477.json",
+    "exposure_modes": {
+      "normal": {"shutter": [100, 10000, 30000, 60000, 66666], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
+      "short":  {"shutter": [100, 5000, 10000, 20000, 66666],  "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
+      "long":   {"shutter": [100, 10000, 30000, 60000, 120000], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]}
+    },
+    "metering_modes": ["centre-weighted", "spot", "matrix"],
+    "y_target": [0, 0.16, 1000, 0.165, 10000, 0.17],
+    "max_digital_gain": 4.0
+  }
 }}
 ```
 The values above are illustrative. The helper reports what libcamera says.
 `features` lets a partial implementation (for example an early C++ helper)
 declare what it supports.
+
+`tuning` (optional, `null` if unavailable) is the exposure part (`rpi.agc`) of
+the tuning file libcamera uses for the sensor. libcamera's camera API does not
+expose it, so the Picamera2 helper reads `<model>.json` with
+`Picamera2.load_tuning_file()`. `shutter` is in µs; `y_target` is lux/target
+pairs. The UI uses it to explain profiles and to detect when auto exposure is
+at its limits (DESIGN.md §3.6).
 
 ## 4. Video channel (`video.sock`)
 

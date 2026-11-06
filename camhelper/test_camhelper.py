@@ -93,6 +93,23 @@ class FramingTest(unittest.TestCase):
         self.assertFalse(camhelper.has_sps(b"\x00\x00\x00\x01\x65\x88\x84"))
 
 
+class TuningTest(unittest.TestCase):
+    def test_read_tuning_from_fake_picamera2(self):
+        fake = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake")
+        sys.path.insert(0, fake)
+        try:
+            t = camhelper.read_tuning("imx477")
+        finally:
+            sys.path.remove(fake)
+        if t is None:
+            self.skipTest("fake picamera2 not importable (numpy missing?)")
+        self.assertEqual(t["exposure_modes"]["long"]["shutter"][-1], 120000)
+        self.assertEqual(t["exposure_modes"]["normal"]["gain"][-1], 16.0)
+        self.assertEqual(t["max_digital_gain"], 4.0)
+        self.assertIn("spot", t["metering_modes"])
+        self.assertIsNone(camhelper.read_tuning(""))
+
+
 class FakeCtl:
     def __init__(self):
         self.sent = []

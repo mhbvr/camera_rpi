@@ -265,6 +265,104 @@ Possible later extensions:
 - The helper could compute its own sharpness metric over a chosen region of
   the image.
 
+
+### 3.6 Exposure control: EV, frame rate, shutter, gain
+
+Raspberry Pi's libcamera auto-exposure algorithm (`rpi.agc`) is what the
+helper drives. Links point to
+[raspberrypi/libcamera @ 9fe1678](https://github.com/raspberrypi/libcamera/tree/9fe1678b8ad5fbae875942b55b58ade23014194c).
+
+**Auto mode, every frame:**
+1. `ExposureValue` (EV) becomes a multiplier 2^EV
+   ([ipa_base.cpp#L1083-L1099](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1083-L1099)).
+2. The brightness target from the tuning file (`y_target`, ≈ 0.16–0.17 of
+   full scale for the HQ camera) is multiplied by 2^EV and **capped at 0.9**
+   ([agc_channel.cpp#L693-L711](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L693-L711)). So EV above about
+   **+2.4** has no further effect.
+3. The needed total exposure (shutter × gain) is computed and **capped at
+   max shutter × max gain** of the selected exposure profile. Max shutter is
+   the profile's last step, limited by the frame time
+   ([#L763-L786](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L763-L786)).
+4. The frame time caps the shutter: `FrameDurationLimits` (the server sends
+   min = max = 1/fps) determines the longest exposure the sensor allows, which
+   becomes the algorithm's maximum
+   ([ipa_base.cpp#L1780-L1810](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1780-L1810),
+   [agc_channel.cpp#L972-L982](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L972-L982)).
+5. The exposure is split by walking the profile's steps: shutter to the next
+   step, then gain to the next step. Analogue gain is capped at the sensor
+   maximum (22.26); digital gain makes up the rest, between 1 and
+   `max_digital_gain` (default 4)
+   ([#L881-L956](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L881-L956)).
+
+HQ camera profiles (`imx477.json`):
+
+| profile | shutter steps (µs) | gain steps |
+|---|---|---|
+| normal | 100, 10000, 30000, 60000, 66666 | 1, 2, 4, 6, 16 |
+| short | 100, 5000, 10000, 20000, 66666 | 1, 2, 4, 6, 16 |
+| long | 100, 10000, 30000, 60000, 120000 | 1, 2, 4, 6, 16 |
+
+**Why EV can do nothing:** in a dark scene at 30 fps auto exposure sits at
+33 ms × gain 16, the cap from steps 3–4 (M0 spike: `ExposureTime=33013
+AnalogueGain=16.0`). EV raises a target that is already out of reach. To get a
+brighter image in auto mode:
+- lower the frame rate (15 fps allows the normal profile's 66.7 ms);
+- use the "long" profile (120 ms) with ≤ 8 fps;
+- or switch to manual.
+
+**Manual mode:**
+- `AeEnable` is a wrapper for `ExposureTimeMode`/`AnalogueGainMode`
+  ([ipa_base.cpp#L1103-L1112](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1103-L1112)).
+- Manual values are ignored while auto is on
+  ([#L979-L997](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L979-L997),
+  [#L1003-L1020](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1003-L1020)).
+- **EV has no effect** in manual mode: the exposure is simply shutter × gain
+  ([agc_channel.cpp#L765-L767](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L765-L767)). The UI disables EV,
+  metering and profile when auto exposure is off.
+- The shutter is still clamped by the frame time. The server stretches the
+  frame time when the manual shutter is longer (`FrameDurationUS` in
+  `internal/camera/controls.go`), which lowers the frame rate and restarts the
+  encoder.
+- libcamera accepts manual gain up to analogue max × max digital gain
+  (≈ 89) ([#L985-L1000](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L985-L1000)). The UI currently stops at 22.
+
+**Reading the actual values.** Per-frame metadata: `ExposureTime`,
+`AnalogueGain`, `DigitalGain`, `FrameDuration`, and `AeState` (Idle / Searching /
+Converged) ([ipa_base.cpp#L1590-L1619](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1590-L1619)).
+- There is **no "limit reached" flag**.
+- `Converged` only means the values stopped changing. libcamera says *"we
+  don't know the exposure/gain limits of the sensor, so the values we keep
+  requesting may be unachievable"*
+  ([agc_channel.cpp#L527-L564](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L527-L564)). So a stuck dark
+  scene reports Converged.
+
+**What the UI does** (`internal/web/static/app.js`):
+- The *Actual values* block shows shutter, analogue and digital gain, frame
+  time, AE state, lux and colour temperature.
+- In auto mode it shows a warning when **shutter ≥ 95 % of min(frame time,
+  profile maximum) and analogue × digital gain ≥ 95 % of the profile's maximum
+  gain**. The warning says which limit applies (frame time → lower the frame
+  rate; profile → "long" profile or a lower frame rate) and that EV has no
+  effect.
+- Info popups (ⓘ) explain exposure overall, frame rate, shutter, gain, EV,
+  metering, profiles and the actual values. The line under the profile select
+  describes the selected profile and whether the frame time caps it.
+
+**Where the profile data comes from.** libcamera's camera API does not expose
+the profiles. The helper reads the tuning file the IPA loads for the sensor
+(`<model>.json`, for example `/usr/share/libcamera/ipa/rpi/vc4/imx477.json`)
+with Picamera2's `load_tuning_file()` / `find_tuning_algo()`
+([picamera2.py#L264-L310](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L264-L310)) and sends the `rpi.agc`
+exposure profiles, metering mode names, `y_target` and `max_digital_gain` in
+`hello.tuning`. The server forwards them to the browser in a sticky `camera`
+event. If the file cannot be read, the profile details and the limit warning
+are not shown.
+
+Caveat: if libcamera is pointed at a different tuning file
+(`LIBCAMERA_RPI_TUNING_FILE`), the helper still reads `<model>.json`. Picamera2
+clears that variable by default when it opens the camera
+([picamera2.py#L336-L353](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L336-L353)).
+
 ---
 
 ## 4. IPC: Go ↔ helper
@@ -494,8 +592,13 @@ taken from the client.
   `POST /api/config` on its **`change` event** (slider released, select
   changed, field committed), with no debounce and no Apply button. Fields that
   interrupt the stream briefly (stream size, bitrate, GOP) are labelled.
-- **Readout** of live AE/AWB values from metadata, with **Lock current**, and
-  the raw **Focus** value (`FocusFoM`, §3.5) with an ⓘ popup that explains it.
+- **Actual values** from metadata (shutter, analogue/digital gain, frame time,
+  AE state, lux, colour temperature), with a warning when auto exposure is at
+  its limits (§3.6), and **Lock current**.
+- The raw **Focus** value (`FocusFoM`, §3.5).
+- ⓘ info popups for focus, exposure, frame rate, shutter, gain, EV, metering,
+  profiles and actual values. EV, metering and profile are disabled in manual
+  mode.
 - **Capture** button: a snapshot without interrupting the stream; the
   browser downloads the JPEG.
 - Collapsible `<details>` sections. Responsive layout for phones.

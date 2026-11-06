@@ -6,6 +6,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 let config = null;
 let lastMeta = null;
 let camLatency = null; // helper: sensor timestamp -> socket write, ms
+let camera = null; // "camera" event: model, sensor_max_gain, tuning (exposure profiles)
 
 // ---------- helpers ----------
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
@@ -66,6 +67,8 @@ function updateEnabled() {
 
 function render(cfg) {
   config = cfg;
+  describeProfile();
+  fillCameraInfo();
   $$('[data-path]').forEach((el) => {
     setField(el, getPath(cfg, el.dataset.path));
     updateOutput(el);
@@ -178,11 +181,91 @@ $('#fullscreen').addEventListener('click', () => $('.video-wrap').requestFullscr
 // ---------- metadata ----------
 function showMeta(md) {
   lastMeta = md;
-  if (md.ExposureTime) $('#md-shutter').textContent = fmtShutter(md.ExposureTime);
+  if (md.ExposureTime) $('#md-shutter').textContent = fmtShutter(md.ExposureTime) + ` (${ms(md.ExposureTime)})`;
   if (md.AnalogueGain) $('#md-gain').textContent = md.AnalogueGain.toFixed(2);
+  if (md.DigitalGain) $('#md-dgain').textContent = md.DigitalGain.toFixed(2);
+  if (md.FrameDuration) $('#md-frame').textContent = `${ms(md.FrameDuration)} (${(1e6 / md.FrameDuration).toFixed(1)} fps)`;
+  if (md.AeState != null) $('#md-aestate').textContent = AE_STATES[md.AeState] ?? md.AeState;
+  checkAeLimit(md);
   if (md.ColourTemperature) $('#md-ct').textContent = Math.round(md.ColourTemperature) + ' K';
   if (md.Lux != null) $('#md-lux').textContent = Math.round(md.Lux);
   if (md.FocusFoM != null) $('#focus-val').textContent = Math.round(md.FocusFoM);
+}
+
+// ---------- exposure explanations (docs/DESIGN.md §3.6) ----------
+const AE_STATES = { 0: 'Idle', 1: 'Searching', 2: 'Converged' }; // libcamera AeState values
+const ms = (us) => (us / 1000).toFixed(1).replace(/\.0$/, '') + ' ms';
+
+function profile(name) {
+  return camera?.tuning?.exposure_modes?.[name] ?? null;
+}
+
+// Fills [data-fill] elements in the popups from the camera event.
+function fillCameraInfo() {
+  const fill = (key, html) => $$(`[data-fill="${key}"]`).forEach((e) => (e.innerHTML = html));
+  if (camera?.sensor_max_gain) fill('sensor-max-gain', camera.sensor_max_gain.toFixed(2));
+  const t = camera?.tuning;
+  if (!t) return;
+  fill('tuning-file', `(<code>${t.file}</code>)`);
+  const yt = (t.y_target || []).filter((_, i) => i % 2 === 1);
+  if (yt.length) fill('ev-cap', '+' + Math.log2(0.9 / Math.max(...yt)).toFixed(1));
+  const order = ['normal', 'short', 'long'];
+  const names = Object.keys(t.exposure_modes || {}).sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
+  const sel = config?.controls?.exposure_mode;
+  const rows = names.map((name) => {
+    const p = t.exposure_modes[name];
+    return `<tr${name === sel ? ' class="selected"' : ''}><td>${name}</td><td>${p.shutter.map(ms).join(' → ')}</td><td>${p.gain.join(' → ')}</td></tr>`;
+  });
+  fill('profile-table', `<table><tr><th>profile</th><th>shutter steps</th><th>gain steps</th></tr>${rows.join('')}</table>
+    <p>Digital gain can add up to ×${t.max_digital_gain} beyond the sensor's analogue maximum.</p>`);
+}
+
+// One-line description of the selected profile under the select.
+function describeProfile() {
+  const el = $('#profile-desc');
+  if (!el || !config) return;
+  const name = config.controls.exposure_mode;
+  const p = profile(name);
+  if (!p) {
+    el.textContent = camera ? 'Profile details unavailable (no tuning data).' : '';
+    return;
+  }
+  const maxShutter = p.shutter.at(-1);
+  const frame = 1e6 / config.controls.fps;
+  let txt = `${name}: shutter up to ${ms(maxShutter)}, gain up to ${p.gain.at(-1)}.`;
+  if (frame < maxShutter) txt += ` At ${config.controls.fps} fps the shutter is capped at ${ms(frame)} by the frame time.`;
+  el.textContent = txt;
+}
+
+// Warns when auto exposure is at its limits: shutter ≈ min(frame time,
+// profile max) and total gain ≈ profile max gain. Then EV has no effect.
+function checkAeLimit(md) {
+  const box = $('#ae-limit');
+  const name = config?.controls?.exposure_mode;
+  const p = profile(name);
+  if (!config?.controls?.auto_exposure || !p || !md.ExposureTime || !md.FrameDuration || md.AeState === 0) {
+    box.hidden = true;
+    return;
+  }
+  const profMax = p.shutter.at(-1);
+  const shutterCap = Math.min(md.FrameDuration, profMax);
+  const gainCap = p.gain.at(-1);
+  const gain = (md.AnalogueGain || 1) * (md.DigitalGain || 1);
+  const atLimit = md.ExposureTime >= 0.95 * shutterCap && gain >= 0.95 * gainCap;
+  box.hidden = !atLimit;
+  if (!atLimit) return;
+  let why;
+  if (md.FrameDuration < profMax) {
+    why = `the shutter is capped by the frame time (${ms(md.FrameDuration)} at ${(1e6 / md.FrameDuration).toFixed(0)} fps). ` +
+      `Lower the frame rate (the "${name}" profile allows up to ${ms(profMax)})`;
+  } else {
+    const long = profile('long');
+    why = `the shutter is at the "${name}" profile maximum (${ms(profMax)}).` +
+      (long && long.shutter.at(-1) > profMax
+        ? ` Use the "long" profile (up to ${ms(long.shutter.at(-1))}, needs ≤ ${Math.floor(1e6 / long.shutter.at(-1))} fps)`
+        : ' Lower the frame rate');
+  }
+  box.textContent = `Auto exposure at its maximum: gain is at the profile limit (${gainCap}) and ${why}, or switch to manual. EV changes have no effect now.`;
 }
 
 // ---------- player ----------
@@ -197,6 +280,11 @@ const player = new Player($('#video'), {
     if (ev.event === 'state') setOverlay(ev.state === 'streaming' ? '' : ev.state + (ev.detail ? ': ' + ev.detail : ''));
     else if (ev.event === 'metadata') showMeta(ev.data);
     else if (ev.event === 'stats') camLatency = ev.data?.latency_ms ?? null;
+    else if (ev.event === 'camera') {
+      camera = ev;
+      fillCameraInfo();
+      describeProfile();
+    }
     else if (ev.event === 'error') toast('Camera error: ' + JSON.stringify(ev.data), true);
   },
   onStatus(s) {

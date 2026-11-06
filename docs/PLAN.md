@@ -215,8 +215,9 @@ StillWorker                              # thread (or subprocess if M0 says so):
      that disables manual inputs, logarithmic shutter slider, gain, EV,
      metering, mode), White balance, Image (brightness, contrast, saturation,
      sharpness, denoise);
-   - metadata readout (shutter as 1/x s, gain, CT, lux), **Lock current**,
-     and the raw `FocusFoM` value with an info popup (DESIGN §3.5).
+   - actual values (shutter, analogue/digital gain, frame time, AE state,
+     lux, CT) with an auto-exposure limit warning, **Lock current**, the raw
+     `FocusFoM` value, and ⓘ info popups (DESIGN §3.5, §3.6).
 
 ### Acceptance criteria
 - [ ] Moving exposure, gain, WB and contrast sliders changes the image

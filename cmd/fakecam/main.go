@@ -25,6 +25,8 @@ import (
 //go:embed testdata/test.h264
 var defaultStream []byte
 
+var dark bool
+
 type fake struct {
 	log   *log.Logger
 	ctlMu sync.Mutex
@@ -45,6 +47,7 @@ func main() {
 	ctlPath := flag.String("ctl", "", "ctl socket path")
 	videoPath := flag.String("video", "", "video socket path")
 	file := flag.String("file", "", "Annex-B H.264 file to replay (default: embedded 1440x1080 test pattern)")
+	flag.BoolVar(&dark, "dark", false, "simulate a dark scene: auto exposure stuck at its limits")
 	flag.Parse()
 	logger := log.New(os.Stderr, "fakecam: ", 0)
 
@@ -290,7 +293,16 @@ func (f *fake) metadata(t time.Duration) map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	exp, gain := 8000.0, 2.0
-	if f.controls["AeEnable"] == false {
+	fd := 1e6 / f.fps()
+	auto := f.controls["AeEnable"] != false
+	if auto && dark {
+		exp, gain = math.Min(fd-300, 66666), 16.0
+	}
+	aeState := 2
+	if !auto {
+		aeState = 0
+	}
+	if !auto {
 		if v, ok := f.controls["ExposureTime"].(float64); ok {
 			exp = v
 		}
@@ -306,7 +318,7 @@ func (f *fake) metadata(t time.Duration) map[string]any {
 	return map[string]any{
 		"ExposureTime": exp, "AnalogueGain": gain, "DigitalGain": 1.0, "ColourGains": gains,
 		"ColourTemperature": 4800 + 100*math.Sin(s/5), "Lux": 300 + 20*math.Sin(s/3),
-		"FrameDuration": int(1e6 / f.fps()), "FocusFoM": int(1500 + 1000*math.Sin(s/2)),
+		"FrameDuration": int(fd), "FocusFoM": int(1500 + 1000*math.Sin(s/2)), "AeState": aeState,
 	}
 }
 
@@ -385,5 +397,16 @@ func helloParams() proto.Hello {
 			},
 		},
 		Features: []string{"snapshot", "metadata", "set_encoder"},
+		Tuning: &proto.Tuning{
+			File: "imx477.json (fake)",
+			ExposureModes: map[string]proto.ExposureProfile{
+				"normal": {Shutter: []float64{100, 10000, 30000, 60000, 66666}, Gain: []float64{1, 2, 4, 6, 16}},
+				"short":  {Shutter: []float64{100, 5000, 10000, 20000, 66666}, Gain: []float64{1, 2, 4, 6, 16}},
+				"long":   {Shutter: []float64{100, 10000, 30000, 60000, 120000}, Gain: []float64{1, 2, 4, 6, 16}},
+			},
+			MeteringModes:  []string{"centre-weighted", "spot", "matrix"},
+			YTarget:        []float64{0, 0.16, 1000, 0.165, 10000, 0.17},
+			MaxDigitalGain: 4,
+		},
 	}
 }

@@ -39,6 +39,23 @@ def _split_aus(data):
     return aus
 
 
+_FAKE_TUNING = {
+    "version": 2.0,
+    "target": "bcm2835",
+    "algorithms": [
+        {"rpi.agc": {"channels": [{
+            "metering_modes": {"centre-weighted": {}, "spot": {}, "matrix": {}},
+            "exposure_modes": {
+                "normal": {"shutter": [100, 10000, 30000, 60000, 66666], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
+                "short": {"shutter": [100, 5000, 10000, 20000, 66666], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
+                "long": {"shutter": [100, 10000, 30000, 60000, 120000], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
+            },
+            "y_target": [0, 0.16, 1000, 0.165, 10000, 0.17],
+        }]}},
+    ],
+}
+
+
 class _Request:
     def __init__(self, cam, frame):
         self.cam, self.frame = cam, frame
@@ -46,10 +63,18 @@ class _Request:
     def get_metadata(self):
         c = self.cam._controls
         t = time.monotonic()
-        auto = c.get("AeEnable", True)
+        auto = c.get("AeEnable", True) and c.get("ExposureTimeMode", 0) == 0
+        fd = int(1e6 / self.cam._fps())
+        if auto and os.environ.get("FAKE_DARK"):  # auto exposure stuck at its limits
+            exp, gain = min(fd - 300, 66666), 16.0
+        elif auto:
+            exp, gain = 8000, 2.0
+        else:
+            exp, gain = c.get("ExposureTime", 8000), c.get("AnalogueGain", 2.0)
         return {
-            "ExposureTime": 8000 if auto else c.get("ExposureTime", 8000),
-            "AnalogueGain": 2.0 if auto else c.get("AnalogueGain", 2.0),
+            "ExposureTime": exp,
+            "AnalogueGain": gain,
+            "AeState": 2 if auto else 0,
             "DigitalGain": 1.0,
             "ColourGains": tuple(c.get("ColourGains", (1.8, 1.5))),
             "ColourTemperature": 4800 + 100 * math.sin(t / 5),
@@ -95,6 +120,16 @@ class Picamera2:
         self._thread = None
         self._frame = 0
         self._cond = threading.Condition()
+
+    @staticmethod
+    def load_tuning_file(tuning_file, dir=None):
+        if tuning_file != "imx477.json":
+            raise RuntimeError("Tuning file not found")
+        return _FAKE_TUNING
+
+    @staticmethod
+    def find_tuning_algo(tuning, name):
+        return next(a for a in tuning["algorithms"] if name in a)[name]
 
     @property
     def sensor_modes(self):
