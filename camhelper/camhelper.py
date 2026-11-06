@@ -31,7 +31,7 @@ PROTO_VERSION = 1
 # video.sock framing
 HEADER = struct.Struct(">IBBHQQQ")  # len, type, flags, reserved, seq, pts_us, wall_us
 assert HEADER.size == 32
-T_AU, T_STREAM_START, T_STREAM_END = 1, 2, 3
+T_AU, T_STREAM_START, T_STREAM_END, T_JPEG = 1, 2, 3, 4
 F_KEY, F_CONFIG = 1, 2
 
 # JSON-RPC error codes (PROTOCOL.md §3.1)
@@ -218,6 +218,13 @@ class Camera:
         self.metadata_hz = 2.0
         self._last_md = 0.0
         self.video_failed = False
+        # MJPEG fallback (DESIGN.md §5.5): a second, hardware MJPEG encoder on
+        # the same lores stream, running only while the server asks for it.
+        self.mjpeg_enabled = False
+        self.mjpeg_params = {"bitrate": 8_000_000, "skip": 2}
+        self.mjpeg_encoder = None
+        self.mjpeg_output = None
+        self.mjpeg_seq = 0
         self.latency_ms = collections.deque(maxlen=60)  # sensor timestamp -> socket write
         self.picam2.post_callback = self._post_callback
 
@@ -267,7 +274,7 @@ class Camera:
                 "sensor_modes": modes,
                 "controls": controls,
             },
-            "features": ["snapshot", "metadata", "set_encoder"],
+            "features": ["snapshot", "metadata", "set_encoder", "mjpeg"],
         }
 
     def state(self, state, detail=None):
@@ -311,6 +318,8 @@ class Camera:
         fdl = controls.get("FrameDurationLimits")
         self.fps = round(1e6 / fdl[0], 3) if fdl else 0.0
         self._start_encoder()
+        if self.mjpeg_enabled:
+            self._start_mjpeg()
         self.picam2.start()
         self.streaming = True
         self.state("streaming")
@@ -328,6 +337,21 @@ class Camera:
         self._stop_encoder("encoder")
         self._start_encoder()
         return {"session": self.session}
+
+    def set_mjpeg(self, p):
+        """Start/stop the MJPEG fallback encoder. Params: enabled (bool),
+        bitrate (bps), skip (encode every skip-th frame)."""
+        try:
+            enabled = bool(p["enabled"])
+            params = {"bitrate": int(p.get("bitrate", self.mjpeg_params["bitrate"])),
+                      "skip": max(1, int(p.get("skip", self.mjpeg_params["skip"])))}
+        except (KeyError, TypeError, ValueError) as e:
+            raise RpcError(E_INVALID_PARAMS, "bad set_mjpeg params: %s" % e)
+        self._stop_mjpeg()
+        self.mjpeg_enabled, self.mjpeg_params = enabled, params
+        if enabled and self.streaming:
+            self._start_mjpeg()
+        return {"active": self.mjpeg_encoder is not None}
 
     def set_controls(self, p):
         """Live controls; does not take self.lock (handled inline)."""
@@ -447,7 +471,37 @@ class Camera:
             self.encoder = None
             self.video.send_json(T_STREAM_END, {"session": self.session, "reason": reason})
 
+    def _start_mjpeg(self):
+        from picamera2.encoders import MJPEGEncoder
+        enc = MJPEGEncoder(bitrate=self.mjpeg_params["bitrate"])
+        enc.frame_skip_count = self.mjpeg_params["skip"]
+        if self.mjpeg_output is None:
+            self.mjpeg_output = _make_jpeg_output(self)
+        self.mjpeg_seq = 0
+        self.picam2.start_encoder(enc, self.mjpeg_output, name="lores")
+        self.mjpeg_encoder = enc
+        log.info("MJPEG encoder started (bitrate %d, every %d. frame)", self.mjpeg_params["bitrate"], self.mjpeg_params["skip"])
+
+    def _stop_mjpeg(self):
+        if self.mjpeg_encoder is not None:
+            self.picam2.stop_encoder(self.mjpeg_encoder)
+            self.mjpeg_encoder = None
+            log.info("MJPEG encoder stopped")
+
+    def on_jpeg(self, frame, timestamp):
+        """Called from the MJPEG encoder thread: one complete JPEG."""
+        if self.video_failed:
+            return
+        try:
+            self.video.send(T_JPEG, 0, self.mjpeg_seq, int(timestamp or 0), bytes(frame))
+        except OSError as e:
+            log.error("video socket write failed: %s", e)
+            self.video_failed = True
+            return
+        self.mjpeg_seq += 1
+
     def _stop_stream(self, reason):
+        self._stop_mjpeg()
         self._stop_encoder(reason)
         self.picam2.stop()
         self.streaming = False
@@ -521,6 +575,16 @@ def _make_output(cam):
     return SocketOutput()
 
 
+def _make_jpeg_output(cam):
+    from picamera2.outputs import Output
+
+    class JpegOutput(Output):
+        def outputframe(self, frame, keyframe=True, timestamp=None, *args, **kwargs):
+            cam.on_jpeg(frame, timestamp)
+
+    return JpegOutput()
+
+
 def encoder_bitrate(bitrate, fps):
     """Bitrate to give the encoder so that `bitrate` is delivered at `fps`."""
     return int(min(MAX_ENCODER_BITRATE, round(bitrate * ENCODER_ASSUMED_FPS / fps)))
@@ -565,7 +629,7 @@ def _enum_values(name):
 class Dispatcher:
     # Camera methods run in a worker thread so that quick ones (set_controls)
     # are never blocked behind them. Responses may therefore be out of order.
-    CAMERA_METHODS = {"configure", "snapshot", "set_encoder", "stop"}
+    CAMERA_METHODS = {"configure", "snapshot", "set_encoder", "set_mjpeg", "stop"}
 
     def __init__(self, cam, ctl):
         self.cam, self.ctl = cam, ctl
@@ -593,6 +657,7 @@ class Dispatcher:
         elif method in self.CAMERA_METHODS:
             fn = {"configure": self._locked(self.cam.configure),
                   "set_encoder": self._locked(self.cam.set_encoder),
+                  "set_mjpeg": self._locked(self.cam.set_mjpeg),
                   "stop": self._locked(self.cam.stop),
                   "snapshot": self.cam.snapshot}[method]
             threading.Thread(target=self._run, args=(id_, fn, params), daemon=True,

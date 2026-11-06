@@ -16,6 +16,7 @@ type Hub struct {
 // Sub is one viewer.
 type Sub struct {
 	C        chan *Message
+	noVideo  bool // events only (MJPEG fallback pages)
 	waitKey  bool // skip video until the next keyframe
 	overflow bool // waitKey was caused by a full queue
 	dropped  int  // frames dropped since the last report
@@ -32,10 +33,15 @@ func NewHub(queueLen int) *Hub {
 
 // Subscribe adds a viewer. It first receives the sticky events (current
 // state and stream info), then video starting at the next keyframe.
-func (h *Hub) Subscribe() *Sub {
+func (h *Hub) Subscribe() *Sub { return h.subscribe(false) }
+
+// SubscribeEvents adds a subscriber that receives events only, no video.
+func (h *Hub) SubscribeEvents() *Sub { return h.subscribe(true) }
+
+func (h *Hub) subscribe(noVideo bool) *Sub {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	s := &Sub{C: make(chan *Message, h.queueLen+len(h.order)+1), waitKey: true}
+	s := &Sub{C: make(chan *Message, h.queueLen+len(h.order)+1), waitKey: true, noVideo: noVideo}
 	if h.closed {
 		close(s.C)
 		return s
@@ -107,6 +113,9 @@ func (h *Hub) Close() {
 }
 
 func (h *Hub) deliver(s *Sub, m *Message) {
+	if m.Type == TypeVideo && s.noVideo {
+		return
+	}
 	if m.Type == TypeVideo {
 		if s.waitKey {
 			if !m.Key() {

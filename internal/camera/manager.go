@@ -26,6 +26,7 @@ type Options struct {
 	HFlip       bool
 	VFlip       bool
 	Log         *log.Logger
+	MJPEG       *stream.FrameHub // MJPEG fallback viewers (may be nil)
 }
 
 // Manager owns the configuration and drives the helper session. All helper
@@ -41,6 +42,8 @@ type Manager struct {
 	sess  *helper.Session
 	hello *proto.Hello
 	state string
+
+	mjpegWanted bool // at least one MJPEG viewer
 }
 
 // NewManager returns a manager starting from cfg.
@@ -95,7 +98,49 @@ func (m *Manager) OnVideo(msg *proto.VideoMsg) {
 		m.opt.Log.Printf("camera: stream_start %s", msg.Payload)
 	case proto.VideoStreamEnd:
 		m.opt.Log.Printf("camera: stream_end %s", msg.Payload)
+	case proto.VideoJPEG:
+		if m.opt.MJPEG != nil {
+			m.opt.MJPEG.Publish(msg.Payload)
+		}
 	}
+}
+
+// MJPEGViewers is the FrameHub.OnCount hook: it starts the helper's MJPEG
+// encoder when the first fallback viewer connects and stops it after the
+// last one leaves.
+func (m *Manager) MJPEGViewers(n int) {
+	m.mu.Lock()
+	want := n > 0
+	changed := want != m.mjpegWanted
+	m.mjpegWanted = want
+	m.mu.Unlock()
+	if changed {
+		go m.syncMJPEG(context.Background())
+	}
+}
+
+// syncMJPEG tells the helper the current MJPEG state and settings.
+func (m *Manager) syncMJPEG(ctx context.Context) {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.syncMJPEGLocked(ctx)
+}
+
+func (m *Manager) syncMJPEGLocked(ctx context.Context) {
+	m.mu.RLock()
+	sess, want, cfg := m.sess, m.mjpegWanted, m.cfg.MJPEG
+	m.mu.RUnlock()
+	if sess == nil {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	p := proto.SetMJPEGParams{Enabled: want, Bitrate: cfg.Bitrate, Skip: cfg.Skip}
+	if err := sess.Call(cctx, proto.MethodSetMJPEG, p, nil); err != nil {
+		m.opt.Log.Printf("camera: set_mjpeg %+v: %v", p, err)
+		return
+	}
+	m.opt.Log.Printf("camera: MJPEG fallback encoder %s", map[bool]string{true: "on", false: "off"}[want])
 }
 
 // RunSession drives one helper session until it ends: wait for hello, send
@@ -143,6 +188,9 @@ func (m *Manager) RunSession(ctx context.Context, sess *helper.Session) error {
 	var res proto.ConfigureResult
 	err := sess.Call(cctx, proto.MethodConfigure, ConfigureParams(cfg, &hello, m.opt.HFlip, m.opt.VFlip), &res)
 	cancel()
+	if err == nil && m.wantMJPEG() {
+		m.syncMJPEGLocked(ctx) // a new helper starts without the MJPEG encoder
+	}
 	m.opMu.Unlock()
 	if err != nil {
 		m.publishState("error", "configure failed: "+err.Error())
@@ -174,6 +222,12 @@ func (m *Manager) publishCamera(h *proto.Hello) {
 		}
 	}
 	m.hub.PublishSticky("camera", stream.NewEvent(ev))
+}
+
+func (m *Manager) wantMJPEG() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.mjpegWanted
 }
 
 func (m *Manager) checkSensorMode(h *proto.Hello) {
@@ -245,6 +299,9 @@ func (m *Manager) applyLocked(ctx context.Context, old, next Config) (ApplyKind,
 	m.mu.Lock()
 	m.cfg = next
 	m.mu.Unlock()
+	if sess != nil && old.MJPEG != next.MJPEG && m.wantMJPEG() {
+		m.syncMJPEGLocked(ctx) // restart the fallback encoder with the new settings
+	}
 	if err := SaveConfig(m.opt.ConfigPath, next); err != nil {
 		m.opt.Log.Printf("camera: saving config: %v", err)
 	}

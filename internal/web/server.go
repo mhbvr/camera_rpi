@@ -31,26 +31,29 @@ var staticFS embed.FS
 
 // Server is the HTTP front end.
 type Server struct {
-	mgr  *camera.Manager
-	hub  *stream.Hub
-	log  *log.Logger
-	tmpl *template.Template
-	mux  *http.ServeMux
+	mgr    *camera.Manager
+	hub    *stream.Hub
+	frames *stream.FrameHub // MJPEG fallback
+	log    *log.Logger
+	tmpl   *template.Template
+	mux    *http.ServeMux
 }
 
 // New builds the server.
-func New(mgr *camera.Manager, hub *stream.Hub, logger *log.Logger) *Server {
+func New(mgr *camera.Manager, hub *stream.Hub, frames *stream.FrameHub, logger *log.Logger) *Server {
 	s := &Server{
-		mgr:  mgr,
-		hub:  hub,
-		log:  logger,
-		tmpl: template.Must(template.ParseFS(templatesFS, "templates/index.html")),
-		mux:  http.NewServeMux(),
+		mgr:    mgr,
+		hub:    hub,
+		frames: frames,
+		log:    logger,
+		tmpl:   template.Must(template.ParseFS(templatesFS, "templates/index.html")),
+		mux:    http.NewServeMux(),
 	}
 	static, _ := fs.Sub(staticFS, "static")
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	s.mux.HandleFunc("GET /stream", s.handleStream)
+	s.mux.HandleFunc("GET /stream.mjpeg", s.handleMJPEG)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("POST /api/config", s.handlePostConfig)
 	s.mux.HandleFunc("POST /api/config/reset", s.handleReset)
@@ -83,6 +86,9 @@ type ui struct {
 	SharpnessMax  float64
 	BitrateMinM   float64
 	BitrateMaxM   float64
+	// MJPEG fallback bitrate range in Mbit/s
+	MJPEGBitrateMinM float64
+	MJPEGBitrateMaxM float64
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +104,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		SharpnessMax:  8,
 		BitrateMinM:   float64(camera.Limits.BitrateMin) / 1e6,
 		BitrateMaxM:   float64(camera.Limits.BitrateMax) / 1e6,
+
+		MJPEGBitrateMinM: float64(camera.Limits.MJPEGBitrateMin) / 1e6,
+		MJPEGBitrateMaxM: float64(camera.Limits.MJPEGBitrateMax) / 1e6,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, d); err != nil {
@@ -106,7 +115,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+	// ?video=0: events only (state, metadata, stats) for MJPEG fallback pages.
 	sub := s.hub.Subscribe()
+	if r.URL.Query().Get("video") == "0" {
+		sub = s.hub.SubscribeEvents()
+	}
 	defer s.hub.Unsubscribe(sub)
 
 	h := w.Header()
@@ -153,6 +166,53 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 				if err := write(stream.Keepalive()); err != nil {
 					return
 				}
+			}
+		}
+	}
+}
+
+// mjpegBoundary separates the parts of the multipart MJPEG stream.
+const mjpegBoundary = "camweb-frame"
+
+// handleMJPEG serves the MJPEG fallback (DESIGN.md §5.5) as
+// multipart/x-mixed-replace for an <img> element. While at least one
+// client is connected, the helper runs a hardware MJPEG encoder; each
+// client gets the newest frame (slow clients skip frames).
+func (s *Server) handleMJPEG(w http.ResponseWriter, r *http.Request) {
+	if s.frames == nil {
+		http.NotFound(w, r)
+		return
+	}
+	sub := s.frames.Subscribe()
+	defer s.frames.Unsubscribe(sub)
+
+	h := w.Header()
+	h.Set("Content-Type", "multipart/x-mixed-replace; boundary="+mjpegBoundary)
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	rc := http.NewResponseController(w)
+	_ = rc.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case frame, ok := <-sub.C:
+			if !ok {
+				return
+			}
+			_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := fmt.Fprintf(w, "--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n", mjpegBoundary, len(frame)); err != nil {
+				return
+			}
+			if _, err := w.Write(frame); err != nil {
+				return
+			}
+			if _, err := io.WriteString(w, "\r\n"); err != nil {
+				return
+			}
+			if err := rc.Flush(); err != nil {
+				return
 			}
 		}
 	}

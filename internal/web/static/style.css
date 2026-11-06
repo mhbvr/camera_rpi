@@ -17,6 +17,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 syst
 .video-wrap { position: relative; background: #000; border-radius: 6px; overflow: hidden; }
 .video-wrap canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 110px); object-fit: contain; }
 .video-wrap:fullscreen canvas { max-height: 100vh; height: 100%; }
+.video-wrap img { display: block; width: 100%; height: auto; max-height: calc(100vh - 110px); object-fit: contain; }
+.video-wrap:fullscreen img { max-height: 100vh; height: 100%; }
+.video-wrap img[hidden], .video-wrap canvas[hidden] { display: none; }
 .stats { position: absolute; left: 8px; top: 8px; padding: 2px 8px; border-radius: 4px; background: rgba(0,0,0,.55); color: #fff; font: 12px ui-monospace, monospace; }
 .overlay { position: absolute; inset: auto 0 0 0; padding: 8px 12px; background: rgba(0,0,0,.65); color: #fff; text-align: center; }
 .overlay[hidden] { display: none; }

@@ -20,6 +20,9 @@ Experiments (PLAN.md M0 numbering):
   controls 0.7  frames until manual exposure applies; return to auto
   socket   0.8  Unix socket hand-off latency for 200 KB frames
   limits   0.9  1440x1080@40 at several bitrates: delivered fps, CPU
+  mjpeg    0.10 MJPEG fallback: H.264 1440x1080@30 alone vs. with a parallel
+           hardware MJPEG encoder (bitrate, frame skip): delivered fps, H.264
+           dropped frames, MJPEG Mbit/s and frame size, CPU
 """
 import os
 import socket
@@ -358,7 +361,55 @@ def exp_limits(picam2, seconds=6):
     print()
 
 
-EXPERIMENTS = ["info", "encode", "sizes", "controls", "socket", "limits"]
+def exp_mjpeg(picam2, fps=30, seconds=6):
+    """Can the Pi 4 run the H.264 stream and the MJPEG fallback encoder in
+    parallel on the same lores stream without losing H.264 frames?"""
+    import camhelper
+    from picamera2.encoders import H264Encoder, MJPEGEncoder
+    print("## 0.10 MJPEG fallback in parallel with H.264 (1440x1080@%d, H.264 6 Mbit/s)\n" % fps)
+    print("Requested MJPEG bitrate vs. delivered; H.264 must stay at %d fps with 0 dropped frames.\n" % fps)
+    print("| MJPEG | H.264 fps | H.264 drops | MJPEG fps | MJPEG Mbit/s | MJPEG KB/frame | CPU % |")
+    print("|---|---|---|---|---|---|---|")
+    cases = [None, (4_000_000, 2), (8_000_000, 2), (16_000_000, 2), (8_000_000, 1), (16_000_000, 1)]
+    for case in cases:
+        picam2.configure(video_config(picam2, fps=fps))
+        h264 = Recorder()
+        enc = H264Encoder(bitrate=camhelper.encoder_bitrate(6_000_000, fps), repeat=True, iperiod=fps)
+        h264.encoder = enc
+        mj = mjenc = None
+        c0 = cpu_seconds()
+        picam2.start_encoder(enc, h264.output, name="lores")
+        if case:
+            mj = Recorder()
+            mjenc = MJPEGEncoder(bitrate=case[0])
+            mjenc.frame_skip_count = case[1]
+            picam2.start_encoder(mjenc, mj.output, name="lores")
+        picam2.start()
+        time.sleep(1)
+        hn0, ht0 = len(h264.frames), time.monotonic()
+        mn0, mb0 = (len(mj.frames), sum(f[1] for f in mj.frames)) if mj else (0, 0)
+        time.sleep(seconds)
+        hn1, ht1 = len(h264.frames), time.monotonic()
+        mn1, mb1 = (len(mj.frames), sum(f[1] for f in mj.frames)) if mj else (0, 0)
+        cpu = (cpu_seconds() - c0) / (seconds + 1)
+        picam2.stop_encoder(enc)
+        if mjenc:
+            picam2.stop_encoder(mjenc)
+        picam2.stop()
+        ts = [f[3] for f in h264.frames[hn0:hn1] if f[3] is not None]
+        drops = sum(1 for i in range(1, len(ts)) if ts[i] - ts[i - 1] > 1.5 * 1e6 / fps)
+        dt = ht1 - ht0
+        label = "none (H.264 only)" if not case else "%d M, every %d." % (case[0] // 1_000_000, case[1])
+        if mj:
+            n = max(1, mn1 - mn0)
+            print("| %s | %.1f | %d | %.1f | %.2f | %.0f | %.0f |" % (label, (hn1 - hn0) / dt, drops, (mn1 - mn0) / dt,
+                                                                (mb1 - mb0) * 8 / dt / 1e6, (mb1 - mb0) / n / 1000, cpu * 100))
+        else:
+            print("| %s | %.1f | %d | – | – | – | %.0f |" % (label, (hn1 - hn0) / dt, drops, cpu * 100))
+    print()
+
+
+EXPERIMENTS = ["info", "encode", "sizes", "controls", "socket", "limits", "mjpeg"]
 
 
 def main():

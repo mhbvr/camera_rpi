@@ -237,3 +237,61 @@ func TestManagerNoCamera(t *testing.T) {
 		t.Fatalf("store-only apply: %v %v", kind, err)
 	}
 }
+
+func TestManagerMJPEG(t *testing.T) {
+	dir := t.TempDir()
+	logger := log.New(io.Discard, "", 0)
+	l, err := helper.Listen(filepath.Join(dir, "run"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	frames := stream.NewFrameHub()
+	m := NewManager(Defaults(), stream.NewHub(8), Options{ConfigPath: filepath.Join(dir, "c.json"), Log: logger, MJPEG: frames})
+	frames.OnCount = m.MJPEGViewers
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		if s, err := l.Accept(ctx, m.OnVideo); err == nil {
+			_ = m.RunSession(ctx, s)
+		}
+	}()
+	f := startFake(t, l)
+	waitFor(t, func() bool { m.mu.RLock(); defer m.mu.RUnlock(); return m.sess != nil })
+
+	lastMJPEG := func() (proto.SetMJPEGParams, bool) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for i := len(f.calls) - 1; i >= 0; i-- {
+			if f.calls[i].Method == proto.MethodSetMJPEG {
+				var p proto.SetMJPEGParams
+				_ = json.Unmarshal(f.calls[i].Params, &p)
+				return p, true
+			}
+		}
+		return proto.SetMJPEGParams{}, false
+	}
+
+	sub := frames.Subscribe() // first viewer → encoder on
+	waitFor(t, func() bool { p, ok := lastMJPEG(); return ok && p.Enabled && p.Bitrate == 8_000_000 && p.Skip == 2 })
+
+	// JPEG frames from the helper reach the viewer
+	m.OnVideo(&proto.VideoMsg{Type: proto.VideoJPEG, Payload: []byte{0xff, 0xd8}})
+	if b := <-sub.C; len(b) != 2 {
+		t.Fatalf("frame %x", b)
+	}
+
+	// changing MJPEG settings while active restarts the encoder with them
+	if _, _, err := m.Apply(ctx, []byte(`{"mjpeg":{"skip":3}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := lastMJPEG(); !p.Enabled || p.Skip != 3 {
+		t.Fatalf("after settings change: %+v", p)
+	}
+	if _, _, err := m.Apply(ctx, []byte(`{"mjpeg":{"skip":0}}`)); err == nil {
+		t.Fatal("skip 0 accepted")
+	}
+
+	frames.Unsubscribe(sub) // last viewer gone → encoder off
+	waitFor(t, func() bool { p, _ := lastMJPEG(); return !p.Enabled })
+}

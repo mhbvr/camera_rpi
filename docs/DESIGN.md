@@ -17,7 +17,7 @@ part replaceable (the Python helper is expected to become C++ later).
 **Out of scope at this stage** (the design keeps them possible, see
 PROTOCOL §6): authentication, gallery and file
 management, full-resolution 12 MP capture (mode switch), DNG raw, recording to
-file, MJPEG fallback, WebRTC, image processing, 16:9 and high-fps sensor
+file, WebRTC, image processing, 16:9 and high-fps sensor
 modes, digital zoom, H.264 profile selection, flips in the UI, presets, status
 and capabilities endpoints, latency estimation in the browser.
 
@@ -801,6 +801,46 @@ codec), `metadata` (2 Hz), `drop` (frames dropped for this viewer).
 - If the stream ends or fails, it reconnects every **2 s** (fixed interval).
   It keeps running in hidden tabs.
 
+### 5.5 MJPEG fallback (browsers without WebCodecs)
+
+**Why:** Firefox for Android has no WebCodecs. MDN's compatibility data lists
+`VideoDecoder` as unsupported there ([VideoDecoder.json](https://github.com/mdn/browser-compat-data/blob/main/api/VideoDecoder.json)).
+Mozilla's tracking bug says *"Android support is all that's left here, which
+we're working on currently"*, but sets no milestone
+([bug 1746557](https://bugzilla.mozilla.org/show_bug.cgi?id=1746557)).
+
+**How:**
+- **Helper:** Picamera2 can run several encoders on the same stream. The
+  helper starts a **hardware `MJPEGEncoder`** on `lores` next to the H.264
+  encoder, using Picamera2's `frame_skip_count` to encode every N-th frame.
+  - It runs only after `set_mjpeg {enabled: true}`, and is restarted with the
+    pipeline on `configure`.
+  - Each output frame is one complete JPEG, sent as video message type 4
+    (PROTOCOL.md §4).
+- **Server:**
+  - `stream.FrameHub` holds the MJPEG viewers with "latest frame wins"
+    semantics: a slow viewer skips frames and never falls behind.
+  - Its viewer count drives `set_mjpeg`. The encoder starts with the first
+    viewer, stops after the last, and is re-enabled when a new helper session
+    starts.
+  - `GET /stream.mjpeg` serves `multipart/x-mixed-replace`.
+- **Browser:**
+  - If `VideoDecoder` is missing (or with `?mjpeg=1`), the page shows an
+    `<img src="/stream.mjpeg">` instead of the canvas.
+  - It still opens `GET /stream?video=0`, which sends events only (state,
+    metadata, stats), no H.264, so the readouts and overlays keep working.
+  - Settings and Capture are unchanged.
+- **Settings:** `mjpeg.bitrate` (requested from the encoder) and `mjpeg.skip`.
+  Changing them while MJPEG viewers are connected restarts the MJPEG encoder.
+
+**Trade-offs:**
+- **Bandwidth:** several times H.264. Fine on Wi-Fi, heavy on mobile data.
+- **Latency:** low, because there is no player buffer.
+- **Secure context:** not needed, so it also works over plain HTTP.
+- **Pi load:** whether the Pi 4 sustains H.264 1440×1080@30 plus MJPEG without
+  dropping H.264 frames, and whether the requested MJPEG bitrate is honoured,
+  is measured by spike experiment 0.10 (`python3 spike/m0_spike.py mjpeg`).
+
 ---
 
 ## 6. Go server
@@ -839,6 +879,10 @@ type Controls struct {
     Brightness, Contrast, Saturation, Sharpness float64
     Denoise    string        // → NoiseReductionMode
 }
+type MJPEG struct { // fallback stream (§5.5), used only while MJPEG viewers watch
+    Bitrate int // bps requested from the hardware MJPEG encoder
+    Skip    int // encode every Skip-th camera frame
+}
 type Still struct {
     Quality int // JPEG quality 1..100
 }
@@ -858,7 +902,8 @@ type Still struct {
 |---|---|---|
 | GET | `/` | page (`html/template`) |
 | GET | `/static/{file}` | embedded JS/CSS |
-| GET | `/stream` | framed H.264 (§5.2) |
+| GET | `/stream` | framed H.264 (§5.2); `?video=0`: events only |
+| GET | `/stream.mjpeg` | MJPEG fallback, `multipart/x-mixed-replace` (§5.5) |
 | GET | `/api/config` | full `Config` |
 | POST | `/api/config` | **the only settings endpoint**: partial JSON merged onto the config. Go decides what to do (live controls / encoder restart / reconfigure). Reply: `{"applied": "live"\|"encoder"\|"reconfigure", "config": {...}}` |
 | POST | `/api/config/reset` | defaults |

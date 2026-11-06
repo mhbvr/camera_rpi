@@ -9,3 +9,12 @@ class H264Encoder:
         self.output = None
         self.index = 0
         self.firsttimestamp = None
+
+
+class MJPEGEncoder:
+    def __init__(self, bitrate=None):
+        self.bitrate = bitrate
+        self.frame_skip_count = 1
+        self.output = None
+        self.index = 0
+        self.firsttimestamp = None

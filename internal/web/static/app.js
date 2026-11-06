@@ -273,7 +273,13 @@ function setOverlay(text) {
   overlay.hidden = !text;
 }
 
+// MJPEG fallback when the browser has no WebCodecs (e.g. Firefox for
+// Android) or when forced with ?mjpeg=1.
+const forceMJPEG = new URLSearchParams(location.search).has('mjpeg');
+const useMJPEG = forceMJPEG || !('VideoDecoder' in window);
+
 const player = new Player($('#video'), {
+  mjpegImg: useMJPEG ? $('#mjpeg') : null,
   onEvent(ev) {
     if (ev.event === 'state') setOverlay(ev.state === 'streaming' ? '' : ev.state + (ev.detail ? ': ' + ev.detail : ''));
     else if (ev.event === 'metadata') showMeta(ev.data);
@@ -288,6 +294,11 @@ const player = new Player($('#video'), {
     if (s !== 'connected') setOverlay(s);
   },
   onStats(s) {
+    if (s.mjpeg) {
+      $('#stats').textContent = `MJPEG fallback${s.width ? ` · ${s.width}×${s.height}` : ''}` +
+        (camLatency != null ? ` · camera ${Math.round(camLatency)} ms` : '');
+      return;
+    }
     $('#stats').textContent = s.width
       ? `${s.width}×${s.height} · ${s.fps} fps · ${Math.round(s.kbps)} kbit/s · dropped ${s.dropped}` +
         (camLatency != null ? ` · camera ${Math.round(camLatency)} ms` : '')
@@ -295,10 +306,7 @@ const player = new Player($('#video'), {
   },
 });
 
-if (!('VideoDecoder' in window)) {
-  $('#nocodec').hidden = false;
-  setOverlay('WebCodecs not available (needs HTTPS or localhost)');
-}
+if (useMJPEG && !forceMJPEG) $('#nocodec').hidden = false;
 
 fetch('/api/config').then((r) => r.json()).then(render).catch((e) => toast(e.message, true));
 player.run();

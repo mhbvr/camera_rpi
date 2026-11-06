@@ -73,13 +73,17 @@ func main() {
 	defer stop()
 
 	hub := stream.NewHub(30)
+	frames := stream.NewFrameHub() // MJPEG fallback viewers
 	mgr := camera.NewManager(cfg, hub, camera.Options{
+		MJPEG:       frames,
 		ConfigPath:  cfgPath,
 		CapturesDir: filepath.Join(*dataDir, "captures"),
 		HFlip:       *hflip,
 		VFlip:       *vflip,
 		Log:         logger,
 	})
+
+	frames.OnCount = mgr.MJPEGViewers
 
 	lis, err := helper.Listen(*runtimeDir, logger)
 	if err != nil {
@@ -130,7 +134,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           web.New(mgr, hub, logger).Handler(),
+		Handler:           web.New(mgr, hub, frames, logger).Handler(),
 		ConnContext:       web.ConnContext,
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig:         tlsConfig,
@@ -152,6 +156,7 @@ func main() {
 	<-ctx.Done()
 	logger.Printf("shutting down")
 	hub.Close() // ends /stream responses
+	frames.Close()
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(sctx)
