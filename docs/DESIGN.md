@@ -830,16 +830,20 @@ we're working on currently"*, but sets no milestone
   - It still opens `GET /stream?video=0`, which sends events only (state,
     metadata, stats), no H.264, so the readouts and overlays keep working.
   - Settings and Capture are unchanged.
-- **Settings:** `mjpeg.bitrate` (requested from the encoder) and `mjpeg.skip`.
-  Changing them while MJPEG viewers are connected restarts the MJPEG encoder.
+- **Settings:** `mjpeg.bitrate` (delivered bitrate, 1–25 Mbit/s) and
+  `mjpeg.skip`. Changing them, or the frame rate, while MJPEG viewers are
+  connected restarts the MJPEG encoder.
+- **Bitrate compensation:** like H.264, the hardware MJPEG encoder budgets
+  bits per frame assuming 30 fps (spike 0.10). The helper hands it
+  `bitrate × 30 / (fps / skip)`, capped at 25 Mbit/s.
 
 **Trade-offs:**
 - **Bandwidth:** several times H.264. Fine on Wi-Fi, heavy on mobile data.
 - **Latency:** low, because there is no player buffer.
 - **Secure context:** not needed, so it also works over plain HTTP.
-- **Pi load:** whether the Pi 4 sustains H.264 1440×1080@30 plus MJPEG without
-  dropping H.264 frames, and whether the requested MJPEG bitrate is honoured,
-  is measured by spike experiment 0.10 (`python3 spike/m0_spike.py mjpeg`).
+- **Pi load (measured, spike 0.10):** H.264 1440×1080@30 keeps 29.8 fps with
+  0 dropped frames while MJPEG runs at up to 30 fps and 16 Mbit/s, for about
+  +5 % CPU. MJPEG frames are 25–70 KB at 1440×1080.
 
 ---
 

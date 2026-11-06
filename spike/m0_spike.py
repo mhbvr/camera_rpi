@@ -367,10 +367,13 @@ def exp_mjpeg(picam2, fps=30, seconds=6):
     import camhelper
     from picamera2.encoders import H264Encoder, MJPEGEncoder
     print("## 0.10 MJPEG fallback in parallel with H.264 (1440x1080@%d, H.264 6 Mbit/s)\n" % fps)
-    print("Requested MJPEG bitrate vs. delivered; H.264 must stay at %d fps with 0 dropped frames.\n" % fps)
+    print("Requested MJPEG bitrate vs. delivered, without and with camhelper's compensation "
+          "(bitrate * 30 / MJPEG fps); H.264 must stay at %d fps with 0 dropped frames.\n" % fps)
     print("| MJPEG | H.264 fps | H.264 drops | MJPEG fps | MJPEG Mbit/s | MJPEG KB/frame | CPU % |")
     print("|---|---|---|---|---|---|---|")
-    cases = [None, (4_000_000, 2), (8_000_000, 2), (16_000_000, 2), (8_000_000, 1), (16_000_000, 1)]
+    # (requested bitrate, skip, compensated)
+    cases = [None, (8_000_000, 2, False), (4_000_000, 2, True), (8_000_000, 2, True),
+             (8_000_000, 1, True), (4_000_000, 3, True)]
     for case in cases:
         picam2.configure(video_config(picam2, fps=fps))
         h264 = Recorder()
@@ -381,7 +384,8 @@ def exp_mjpeg(picam2, fps=30, seconds=6):
         picam2.start_encoder(enc, h264.output, name="lores")
         if case:
             mj = Recorder()
-            mjenc = MJPEGEncoder(bitrate=case[0])
+            br = camhelper.encoder_bitrate(case[0], fps / case[1]) if case[2] else case[0]
+            mjenc = MJPEGEncoder(bitrate=br)
             mjenc.frame_skip_count = case[1]
             picam2.start_encoder(mjenc, mj.output, name="lores")
         picam2.start()
@@ -399,7 +403,8 @@ def exp_mjpeg(picam2, fps=30, seconds=6):
         ts = [f[3] for f in h264.frames[hn0:hn1] if f[3] is not None]
         drops = sum(1 for i in range(1, len(ts)) if ts[i] - ts[i - 1] > 1.5 * 1e6 / fps)
         dt = ht1 - ht0
-        label = "none (H.264 only)" if not case else "%d M, every %d." % (case[0] // 1_000_000, case[1])
+        label = "none (H.264 only)" if not case else "%d M, every %d.%s" % (
+            case[0] // 1_000_000, case[1], ", compensated" if case[2] else "")
         if mj:
             n = max(1, mn1 - mn0)
             print("| %s | %.1f | %d | %.1f | %.2f | %.0f | %.0f |" % (label, (hn1 - hn0) / dt, drops, (mn1 - mn0) / dt,

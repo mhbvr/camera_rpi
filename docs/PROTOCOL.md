@@ -188,6 +188,9 @@ type 4.
 → {"jsonrpc":"2.0","id":6,"result":{"active":true}}
 ```
 `skip` = encode every skip-th camera frame (Picamera2 `frame_skip_count`).
+`bitrate` is the bitrate to deliver; the Picamera2 helper compensates for the
+encoder's 30 fps assumption (`bitrate × 30 / (fps / skip)`, capped at
+25 Mbit/s). The server re-sends `set_mjpeg` after a frame-rate change.
 `active` is false when the camera is not streaming (the encoder then starts
 with the next `configure`).
 

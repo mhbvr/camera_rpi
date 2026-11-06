@@ -473,14 +473,20 @@ class Camera:
 
     def _start_mjpeg(self):
         from picamera2.encoders import MJPEGEncoder
-        enc = MJPEGEncoder(bitrate=self.mjpeg_params["bitrate"])
-        enc.frame_skip_count = self.mjpeg_params["skip"]
+        # Like H.264, the MJPEG encoder budgets bits per frame assuming
+        # 30 fps (spike 0.10: every 2nd frame delivered half the requested
+        # bitrate), so compensate for the actual MJPEG frame rate.
+        skip = self.mjpeg_params["skip"]
+        enc_bitrate = encoder_bitrate(self.mjpeg_params["bitrate"], (self.fps or ENCODER_ASSUMED_FPS) / skip)
+        enc = MJPEGEncoder(bitrate=enc_bitrate)
+        enc.frame_skip_count = skip
         if self.mjpeg_output is None:
             self.mjpeg_output = _make_jpeg_output(self)
         self.mjpeg_seq = 0
         self.picam2.start_encoder(enc, self.mjpeg_output, name="lores")
         self.mjpeg_encoder = enc
-        log.info("MJPEG encoder started (bitrate %d, every %d. frame)", self.mjpeg_params["bitrate"], self.mjpeg_params["skip"])
+        log.info("MJPEG encoder started (bitrate %d, encoder bitrate %d, every %d. frame)",
+                 self.mjpeg_params["bitrate"], enc_bitrate, skip)
 
     def _stop_mjpeg(self):
         if self.mjpeg_encoder is not None:
