@@ -55,6 +55,41 @@ class JpegTest(unittest.TestCase):
         np.testing.assert_allclose(left, (200, 40, 40), atol=8)
         np.testing.assert_allclose(right, (30, 160, 220), atol=8)
 
+    def grey_ramp(self):
+        """Grey patches over the whole range must keep their brightness (the
+        old int16 code turned everything above Y≈144 black)."""
+        from PIL import Image
+        levels = [10, 60, 120, 150, 180, 210, 240, 252]
+        h, pw, stride = 64, 32, 320
+        w = pw * len(levels)
+        rgb = np.zeros((h, w, 3), dtype=np.uint8)
+        for i, lv in enumerate(levels):
+            rgb[:, i * pw:(i + 1) * pw] = lv
+        arr = make_yuv420(rgb, stride)
+        jpeg = camhelper.encode_yuv420_jpeg(arr, w, h, 95, full_range=False)
+        out = np.asarray(Image.open(io.BytesIO(jpeg)).convert("L")).astype(int)
+        got = [out[8:-8, i * pw + 8:(i + 1) * pw - 8].mean() for i in range(len(levels))]
+        for lv, g in zip(levels, got):
+            self.assertAlmostEqual(g, lv, delta=6, msg="grey %d came out as %.1f" % (lv, g))
+
+    def test_grey_ramp_pillow(self):
+        saved = sys.modules.get("simplejpeg")
+        sys.modules["simplejpeg"] = None
+        try:
+            self.grey_ramp()
+        finally:
+            if saved is None:
+                del sys.modules["simplejpeg"]
+            else:
+                sys.modules["simplejpeg"] = saved
+
+    def test_grey_ramp_simplejpeg(self):
+        try:
+            import simplejpeg  # noqa: F401
+        except ImportError:
+            self.skipTest("simplejpeg not installed")
+        self.grey_ramp()
+
     def test_fallback_pillow(self):
         saved = sys.modules.get("simplejpeg")
         sys.modules["simplejpeg"] = None  # force ImportError

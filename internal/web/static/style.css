@@ -13,7 +13,7 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
 .layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; padding: 16px; min-height: 100vh; }
-.viewer { min-width: 0; }
+.viewer { min-width: 0; position: sticky; top: 16px; align-self: start; }
 .video-wrap { position: relative; background: #000; border-radius: 6px; overflow: hidden; }
 .video-wrap canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 110px); object-fit: contain; }
 .video-wrap:fullscreen canvas { max-height: 100vh; height: 100%; }
@@ -21,7 +21,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 syst
 .overlay { position: absolute; inset: auto 0 0 0; padding: 8px 12px; background: rgba(0,0,0,.65); color: #fff; text-align: center; }
 .overlay[hidden] { display: none; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 10px; }
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; align-self: start; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; align-self: start;
+  position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; overscroll-behavior: contain; }
 details { border-bottom: 1px solid var(--line); padding: 6px 0 10px; }
 summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
 label { display: block; margin: 8px 0 2px; color: var(--muted); }
@@ -74,4 +75,5 @@ button.info { width: 22px; height: 22px; padding: 0; border-radius: 50%; font: i
 .toast.error { background: var(--danger); }
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; padding: 16px; }
+  .viewer, .panel { position: static; max-height: none; overflow: visible; }
 }
