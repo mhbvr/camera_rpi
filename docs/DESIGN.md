@@ -1,4 +1,4 @@
-# camera_rpi — Design Document (v0.2, for review)
+# camera_rpi — Design Document (v0.3, for review)
 
 A web application for a Raspberry Pi 4 with the HQ Camera (Sony IMX477):
 
@@ -7,12 +7,17 @@ A web application for a Raspberry Pi 4 with the HQ Camera (Sony IMX477):
 2. **camera settings** (exposure, gain, white balance, image tuning, frame
    rate, resolution, zoom, bitrate…), applied **live** where the hardware
    allows it;
-3. **stills taken without stopping the stream** (quick snapshot), plus
-   **full-resolution 12 MP stills** (JPEG/PNG, optional DNG raw) with a short
-   pause.
+3. **still capture without stopping the stream**: a JPEG snapshot from the
+   camera's higher-resolution `main` stream (~3 MP with the default profile),
+   downloaded straight to the browser.
 
 It is a prototype: keep it simple, keep dependencies few, and make the camera
 part replaceable (the Python helper is expected to become C++ later).
+
+**Out of scope at this stage** (the design keeps them possible, see
+PROTOCOL §6): TLS/HTTPS in the app, authentication, gallery and file
+management, full-resolution 12 MP capture (mode switch), DNG raw, recording to
+file, MJPEG fallback, WebRTC, image processing.
 
 Related documents:
 - [`PROTOCOL.md`](PROTOCOL.md) — the IPC contract between the Go server and
@@ -25,9 +30,9 @@ Related documents:
   Python helper using Picamera2**. It talks to libcamera directly and uses its
   two ISP outputs: H.264 video from `lores`, stills from `main`.
 - Most settings now apply **live** with no pipeline restart.
-- Stills: a **snapshot without interrupting the stream** (main stream,
-  ~3 MP), plus a **full-res capture** by switching mode inside the helper (no
-  process restart).
+- Stills: only a **snapshot without interrupting the stream** (main stream,
+  ~3 MP). Full-res capture, TLS, auth and the gallery were dropped in the
+  v0.3 review.
 - The H.264 splitter and its extra one-frame delay are gone. The encoder
   hands over whole frames.
 - IPC between Go and the helper uses **Unix domain sockets** (§4).
@@ -61,7 +66,7 @@ Related documents:
   | 1332×990 10-bit | 120 | high fps, cropped FOV |
   | 2028×1080 12-bit | 50 | 16:9, cropped FOV |
   | 2028×1520 12-bit (2×2 binned) | 40 | **default: 4:3 full FOV** |
-  | 4056×3040 12-bit | 10 | full-res stills only |
+  | 4056×3040 12-bit | 10 | full-res stills (not used at this stage) |
 
 - **Hardware H.264 encoder**: max 1920×1080 (level 4.2). The Pi 4 also has a
   hardware MJPEG encoder. Still JPEG encoding is **in software** (Picamera2
@@ -70,8 +75,8 @@ Related documents:
   for exposure and gain. Changing the sensor mode, stream sizes or transform
   needs a reconfigure (stop, configure, start) **inside the process**.
 - Camera buffers come from **CMA** (320 MB by default on Pi 4 models with more
-  than 1 GB RAM). One 4056×3040 YUV420 buffer is about 18.5 MB, so full-res
-  configurations must use few buffers.
+  than 1 GB RAM). The default 2028×1520 + 1440×1080 YUV420 configuration
+  uses ~7 MB per buffer set, which is comfortable.
 
 ---
 
@@ -84,7 +89,7 @@ Related documents:
 │  camhelper.py (Python, Picamera2)                 camweb (Go, stdlib only)     │
 │  ┌──────────────────────────────────┐            ┌───────────────────────────┐ │
 │  │ libcamera ── ISP ─┬─ main  (YUV) ─┼─ snapshot ─▶ files in captures/        │ │
-│  │   IMX477          │                │  /full-res  ▲  (helper writes, Go serves)│
+│  │   IMX477          │                │             ▲  (helper writes, Go returns)│
 │  │                   └─ lores (YUV) ─┤             │                          │ │
 │  │                        │          │             │                          │ │
 │  │                  H264Encoder (HW) │             │                          │ │
@@ -93,7 +98,7 @@ Related documents:
 │  │                                   │  (binary)   │  │  video reader ├─▶ Hub ─┼─┐
 │  │  control loop  ◀──────────────────┼─────────────┼──│  ctl JSON-RPC │        │ │ │
 │  │  (configure, set_controls,        │   ctl.sock  │  └──────▲───────┘        │ │ │
-│  │   snapshot, capture_full)  ───────┼─────────────┼─▶ events (state, metadata) │ │
+│  │   snapshot)                ───────┼─────────────┼─▶ events (state, metadata) │ │
 │  └──────────────────────────────────┘ (JSON lines) │  ┌──────┴───────┐        │ │ │
 │            ▲ spawned + supervised by Go             │  │camera.Manager│ config │ │ │
 │            └────────────────────────────────────────┼──│ policy, diff,│ persist│ │ │
@@ -106,7 +111,7 @@ Related documents:
 └────────────────────────────────────────────────────────────────────┼────────────────┘
                                                                      │ HTTPS
                        Browser: fetch('/stream') → parser → VideoDecoder (WebCodecs) → <canvas>
-                                REST: /api/config, /api/controls, /api/capture, /api/captures
+                                REST: /api/config, /api/controls, /api/capture
 ```
 
 ### Division of responsibility (central for the later C++ rewrite)
@@ -116,10 +121,10 @@ Related documents:
   config.
 - **Go owns everything else**: the user-facing config model, validation,
   defaults, persistence, deciding how disruptive a change is, file naming,
-  HTTP, auth, fan-out to viewers, backpressure.
+  HTTP, fan-out to viewers, backpressure.
 - They talk only through the protocol in [`PROTOCOL.md`](PROTOCOL.md). A C++
-  helper that implements it is a drop-in replacement, and a Go **conformance
-  test** checks any helper against the protocol.
+  helper that implements it is a drop-in replacement. A Go **conformance
+  test** (planned before the C++ work) checks any helper against the protocol.
 
 ---
 
@@ -166,33 +171,21 @@ keyframe.
 | Profile / stream size / sensor mode / flips / buffer count | reconfigure inside the helper (stop → configure → start) | short gap, a few hundred ms expected (to measure) |
 | Helper crash | Go restarts the helper | about 1–3 s (process and camera init) |
 
-### 3.3 Stills
-**Quick snapshot (no interruption).** The helper grabs the next completed
-request, copies the `main` buffer (~4.6 MB for 2028×1520 YUV420), releases the
-request at once, and encodes JPEG/PNG in a worker thread. The H.264 stream on
-lores keeps running. If raw is requested, DNG is saved from the raw stream
-when one is configured (sensor-mode resolution). The default video config
-leaves out raw to save CMA; with "raw on snapshot" enabled, the pipeline is
-reconfigured once to include it.
+### 3.3 Still capture (snapshot from the live stream)
+The helper takes the next completed request, copies the `main` buffer
+(~4.6 MB for 2028×1520 YUV420), releases the request at once, and encodes
+JPEG in a worker thread. The H.264 stream on lores keeps running, so there is
+**no interruption**.
+- Resolution = the main stream size of the active profile (3.1 MP for `4:3`,
+  2.1 MP for `16:9`, 1.3 MP for `fast`).
+- Exposure and white balance are exactly those of the live stream (it is the
+  same frame).
+- The file is written to `<path>.jpg.tmp` and then renamed. Go sends it to the
+  browser as a download and keeps the copy in `<data>/captures/` (there is no
+  UI for managing them).
 
-**Full-resolution capture (short pause).**
-```
-stop_encoder → switch_mode(still_cfg: main 4056×3040 YUV420 [+ raw], buffer_count=2)
-             → capture_request → copy main [+ raw] → release
-             → switch_mode(video_cfg) → start_encoder
-             → (worker thread) encode JPEG/PNG, write DNG
-```
-- The encoder is stopped and restarted explicitly around the mode switch. This
-  is the safe path; whether the encoder can stay attached is checked in M0.
-- The buffers are copied and encoding happens **after** switching back, so
-  the stream pause covers only the two mode switches and one frame (expected
-  well under a second; measured in M0).
-- AE/AWB state is carried across the switch (the manual says the
-  `switch_mode` delay brings no benefit on Pi 4). If the M0 spike shows
-  drift, the helper copies the last `ExposureTime`/`AnalogueGain`/`ColourGains`
-  into the still config as fixed values.
-- Files are written to a temp name and then renamed, so Go never serves a
-  half-written file.
+Not at this stage, but the design leaves room for it: a 12 MP capture by
+switching mode inside the helper (short pause), and DNG from a raw stream.
 
 ### 3.4 Metadata
 A Picamera2 `post_callback` samples per-frame metadata at about 2 Hz:
@@ -276,8 +269,20 @@ with WebCodecs.**
   (seconds of latency), MSE/fMP4 (more buffering, needs a muxer), WebRTC
   (best on lossy links, but the large `pion` dependency plus ICE/STUN/TURN; it
   is the upgrade path).
-- WebCodecs requires a **secure context**: HTTPS (self-signed cert option,
-  your own cert, or a TLS-terminating proxy or tunnel) or `localhost`.
+- WebCodecs requires a **secure context** (HTTPS or `localhost`). At this
+  stage the app serves **plain HTTP only**. Ways to get a secure context
+  without TLS in the app:
+  - **SSH port forward** (LAN or internet):
+    `ssh -L 8080:localhost:8080 pi@raspberrypi`, then open
+    `http://localhost:8080`;
+  - **Chrome/Edge flag** for LAN testing:
+    `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, then add
+    `http://raspberrypi.local:8080`;
+  - **an HTTPS tunnel or proxy** for internet use (TLS terminated outside the
+    app): Tailscale Serve/Funnel, Cloudflare Tunnel, Caddy.
+
+  Opening `http://<pi-ip>:8080` without one of these shows a page message
+  explaining it.
 
 ### 5.2 Wire format of `GET /stream`
 Body = sequence of messages, each a 16-byte header plus payload:
@@ -336,7 +341,6 @@ type Pipeline struct {
     StreamSize   Size   // must be one of the profile's lores choices
     HFlip, VFlip bool   // rotation 180 = both
     BufferCount  int
-    RawSnapshots bool   // include raw stream so snapshots can save DNG
 }
 type Encoder struct {
     Bitrate int    // bps
@@ -359,9 +363,7 @@ type Controls struct {
     Zoom       Rect          // normalised → ScalerCrop (sensor pixels, from ScalerCropMaximum)
 }
 type Still struct {
-    Format  string // jpg|png
-    Quality int
-    Raw     bool   // DNG
+    Quality int // JPEG quality 1..100
 }
 ```
 - Ranges and defaults come from the helper's `hello` (libcamera
@@ -385,13 +387,13 @@ type Still struct {
 | GET | `/api/capabilities` | profiles, control ranges, sensor modes (from `hello`) |
 | GET | `/api/status` | state, helper pid/uptime/restarts, viewers, fps, bitrate, CPU temperature, last error, last metadata |
 | GET | `/api/time` | clock-offset helper |
-| POST | `/api/capture` | `{"mode":"snapshot"\|"full", "format", "quality", "raw"}` → `{name, url, raw_url?, width, height, size, ms}` |
-| GET | `/api/captures` | list |
-| GET / DELETE | `/captures/{name}` | download / delete (name checked against the directory listing) |
+| POST | `/api/capture` | optional `{"quality": 95}` → replies with **the JPEG itself** (`image/jpeg`, `Content-Disposition: attachment; filename=IMG_YYYYMMDD_HHMMSS.jpg`, headers `X-Capture-Width/Height`) |
 
-Security: optional Basic auth (`-auth user:pass` / `CAMERA_AUTH`), TLS
-(`-tls-cert/-tls-key` or `-tls-self-signed`), `Origin` check on state-changing
-methods, strict validation. The helper gets only validated, typed values.
+Security: **none in the app at this stage** (no TLS, no auth). Run it on a
+trusted network, or reach it through SSH forwarding, Tailscale or a tunnel
+with its own access control. Validation stays strict: the helper gets only
+validated, typed values, and file names are always generated by Go, never
+taken from the client.
 
 ### 6.3 UI
 - Live video canvas with stats overlay (fps, kbps, resolution, latency,
@@ -402,8 +404,8 @@ methods, strict validation. The helper gets only validated, typed values.
   GOP): an explicit **Apply** button marked "briefly interrupts stream".
 - **Readout** of live AE/AWB values from metadata, with **Lock current** and a
   focus meter (`FocusFoM` bar).
-- **Snapshot** (no interruption) and **Full-res** (short pause) buttons. A
-  gallery with download and delete.
+- **Capture** button: a snapshot without interrupting the stream; the
+  browser downloads the JPEG.
 - Collapsible `<details>` sections. Responsive layout for phones.
 
 ---
@@ -425,8 +427,7 @@ camera_rpi/
 │   ├── camera/                     Config, profiles, validation, controls mapping, diff, Manager, persistence
 │   ├── stream/                     Hub, per-viewer queues, browser wire format
 │   ├── h264/                       NAL type scan, SPS → codec string (small)
-│   ├── web/                        server, handlers, middleware, TLS, templates/, static/
-│   └── conformance/                protocol conformance tests runnable against any helper
+│   └── web/                        server, handlers, templates/, static/
 ├── deploy/camweb.service
 └── docs/{DESIGN.md, PROTOCOL.md, PLAN.md}
 ```
@@ -452,10 +453,8 @@ camera_rpi/
 
 | Risk | Mitigation |
 |---|---|
-| Python GIL: a JPEG encode of a 12 MP frame (software, ~0.5 s?) stalls the video sender thread and adds jitter | measure in M0; encode in a separate **process** (`multiprocessing`, buffer via shared memory) if needed; or use the HW MJPEG encoder for snapshots |
+| Python GIL: a JPEG encode of a 3 MP frame (software, ~0.1–0.2 s?) stalls the video sender thread and adds jitter | measure in M0; encode in a separate **process** (`multiprocessing`) if needed, or use the HW MJPEG encoder for snapshots |
 | lores/main aspect and crop behave differently than assumed | M0 spike; the profile table lives in Go and is easy to adjust |
-| The encoder cannot survive `switch_mode` | already planned: explicit stop/start of the encoder |
-| CMA exhaustion with full-res plus raw | `buffer_count=2` for stills, raw only on request; document the `cma=` overlay setting |
 | Picamera2 API differences between versions (`Output.outputframe` signature, encoder args) | pin a minimum version in `hello`; use `*args, **kwargs` in the output adapter |
 | TCP latency build-up over the internet | drop-to-keyframe, small send buffer; WebRTC as the upgrade path |
-| WebCodecs needs HTTPS | self-signed cert option, proxy or tunnel docs |
+| WebCodecs needs a secure context, and the app has no TLS | SSH forward, browser flag, or an external HTTPS tunnel (§5.1); clear message in the page |

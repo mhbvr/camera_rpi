@@ -2,7 +2,8 @@
 
 This is the contract between the Go server (`camweb`) and the camera helper
 (`camhelper.py` now, possibly a C++ binary later). Any helper that implements
-this document is a drop-in replacement. `internal/conformance` tests a helper
+this document is a drop-in replacement. A conformance suite
+(`internal/conformance`, planned before the C++ helper) will test a helper
 against it.
 
 ## 1. Transport
@@ -54,10 +55,10 @@ opened, not started, and no video is sent.
 {"event": "metadata", "data": { ... }}
 ```
 - `id`: positive integer chosen by the server. Responses can come **out of
-  order** (a long `capture_full` must not block `ping`), so the server matches
+  order** (a snapshot's JPEG encode must not block `ping`), so the server matches
   them by id.
 - Requests that touch the camera configuration (`configure`, `snapshot`,
-  `capture_full`, `set_encoder`, `stop`) run **one at a time** inside the
+  `set_encoder`, `stop`) run **one at a time** inside the
   helper. If another is already running, the helper either queues it or
   replies `busy`. v1: **reply `busy`**; the server serialises anyway.
 - Error codes: `invalid_args`, `busy`, `not_configured`, `camera_error`,
@@ -67,7 +68,7 @@ opened, not started, and no video is sent.
 | event | data | when |
 |---|---|---|
 | `hello` | see §3.4 | first message on connect |
-| `state` | `{"state": "idle"\|"starting"\|"streaming"\|"reconfiguring"\|"capturing"\|"error", "detail": "..."}` | on every change |
+| `state` | `{"state": "idle"\|"starting"\|"streaming"\|"reconfiguring"\|"error", "detail": "..."}` | on every change |
 | `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "ScalerCrop": [x,y,w,h], "FocusFoM": 1234, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
 | `stats` | `{"fps": 30.0, "frames": 12345, "dropped": 0, "queue": 1}` | 1 Hz |
 | `error` | `{"code": "...", "message": "..."}` | asynchronous errors (for example the encoder failed) |
@@ -83,7 +84,6 @@ helper stops, reconfigures and restarts (the video channel gets a new
   "sensor":  {"size": [2028,1520], "bit_depth": 12},
   "main":    {"size": [2028,1520], "format": "YUV420"},
   "lores":   {"size": [1440,1080], "format": "YUV420"},
-  "raw":     false,
   "transform": {"hflip": false, "vflip": false},
   "buffer_count": 6,
   "controls": {"FrameDurationLimits": [33333,33333], "AeEnable": true},
@@ -121,40 +121,24 @@ Restarts only the encoder with new parameters. The video channel gets a new
 ```
 
 #### `snapshot`
-Captures from the running `main` stream **without interrupting video**.
+Captures one frame from the running `main` stream as JPEG **without
+interrupting video**.
 ```json
 {"id":4,"cmd":"snapshot","args":{
-  "path": "/home/pi/data/captures/IMG_20261106_134501",   // no extension; helper appends
-  "format": "jpg", "quality": 95, "raw": false
+  "path": "/home/pi/data/captures/IMG_20261106_134501",   // no extension; helper appends .jpg
+  "quality": 95
 }}
 → {"id":4,"ok":true,"result":{
-  "files": [{"path": ".../IMG_20261106_134501.jpg", "size": 1834221, "width": 2028, "height": 1520}],
+  "file": {"path": ".../IMG_20261106_134501.jpg", "size": 1834221, "width": 2028, "height": 1520},
   "metadata": { ...frame metadata... },
   "timing_ms": {"capture": 35, "encode": 180}
 }}
 ```
-`raw: true` requires a raw stream in the current configuration
-(`configure.raw = true`); otherwise → `invalid_args`.
-
-#### `capture_full`
-Full sensor resolution capture by switching mode. Video pauses briefly. A new
-`stream_start` follows on the video channel.
-```json
-{"id":5,"cmd":"capture_full","args":{
-  "path": ".../IMG_20261106_134612", "format": "jpg", "quality": 95, "raw": true,
-  "size": [4056,3040], "buffer_count": 2
-}}
-→ {"id":5,"ok":true,"result":{
-  "files": [{"path": ".../IMG_20261106_134612.jpg", ...}, {"path": ".../IMG_20261106_134612.dng", ...}],
-  "metadata": { ... },
-  "timing_ms": {"video_gap": 640, "capture": 120, "encode": 520}
-}}
-```
-Rules for both still commands:
-- The helper writes `<path>.<ext>.tmp`, then renames it to `<path>.<ext>`.
-- The response is sent **after** the files are complete.
-- The video stream must already have resumed by the time the response is sent
-  (encoding happens after the switch back).
+Rules:
+- The helper writes `<path>.jpg.tmp`, then renames it to `<path>.jpg`.
+- The response is sent **after** the file is complete.
+- The `path` comes from the server only (never from a browser client).
+- If not streaming → `not_configured`.
 
 #### `stop`
 Stops streaming and returns to idle (the camera stays open).
@@ -189,7 +173,7 @@ Respond, release the camera, exit 0.
       "...": {}
     }
   },
-  "features": ["snapshot", "capture_full", "raw", "metadata", "set_encoder"]
+  "features": ["snapshot", "metadata", "set_encoder"]
 }}
 ```
 The values above are illustrative. The helper reports what libcamera says.
@@ -220,7 +204,7 @@ offset size field
   `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30}`.
   Sent whenever the encoder (re)starts. The server resets all viewers to
   "wait for keyframe".
-- **type 3 (stream_end):** JSON `{"session": 3, "reason": "reconfigure"|"capture_full"|"stop"|"error"}`.
+- **type 3 (stream_end):** JSON `{"session": 3, "reason": "reconfigure"|"encoder"|"stop"|"error"}`.
 
 ### Flow control
 - The helper keeps a **bounded queue** (default 60 AUs) between the encoder
@@ -239,6 +223,11 @@ offset size field
   bump. Receivers **must ignore unknown fields**.
 
 ## 6. Future extensions (reserved, not in v1)
+- **`capture_full`**: a full sensor resolution (4056×3040) capture by
+  switching mode inside the helper (stop encoder → `switch_mode` → capture →
+  switch back → start encoder). Video pauses briefly and a new `stream_start`
+  follows.
+- **Raw/DNG**: `configure.raw` plus `snapshot.raw` to also save a DNG.
 - **Raw frame sharing (shared memory):** command `share_frames {"stream":"lores","slots":4}`.
   The helper replies with a `memfd` passed via `SCM_RIGHTS` on `ctl.sock`, and
   sends `frame_ready {"slot":n,"seq":…}` events. The server acknowledges with

@@ -10,8 +10,8 @@ Sizes: **S** ≈ < 0.5 day, **M** ≈ 0.5–1 day, **L** ≈ 1–2 days.
 M0 Hardware spike (Pi)          ─┐  numbers that fix the open assumptions
 M1 IPC + live stream skeleton   ─┤  end-to-end video, helper supervision, fake helper
 M2 Configuration + live controls─┤  full protocol, config model, UI
-M3 Stills                       ─┤  snapshot, full-res, DNG, gallery
-M4 Hardening                    ─┘  TLS, auth, backpressure tuning, deploy, docs
+M3 Snapshot                     ─┤  live capture from main → JPEG download
+M4 Polish                       ─┘  backpressure tuning, systemd unit, README
 (later) C++ helper              — same PROTOCOL.md, validated by the conformance suite
 ```
 
@@ -29,18 +29,15 @@ to `docs/SPIKE.md`.
 | 0.2 | Video config main 2028×1520 + lores 1440×1080 YUV420, `H264Encoder` on lores, custom `Output.outputframe` | Is each call **exactly one AU**? Is the keyframe flag correct? Are SPS/PPS present with `repeat=True`? What does the `timestamp` argument mean (µs, clock domain vs `SensorTimestamp` and `time.monotonic_ns()`)? The `outputframe` signature on the installed version. CPU % at 30 fps |
 | 0.3 | Capture-to-hand-off latency | `time.monotonic_ns() - SensorTimestamp` at `outputframe` (if same clock domain), averaged over 300 frames |
 | 0.4 | `capture_request()` + copy main while encoding | Any gaps in encoder frame timestamps (no dropped frames)? Copy time for 2028×1520 YUV420 |
-| 0.5 | JPEG encode of a 2028×1520 and a 4056×3040 YUV420 buffer in a worker thread | Encode time. **Jitter of video `outputframe` intervals during the encode** (GIL impact). If jitter > 10 ms → plan to encode in a subprocess |
-| 0.6 | `stop_encoder` → `switch_mode(full-res still cfg, buffer_count=2)` → capture → `switch_mode(video)` → `start_encoder` | Video gap (last AU before to first AU after). Does exposure/gain/colour gains metadata before and after match (AE/AWB carried over)? Can the encoder stay attached during `switch_mode` (try both)? |
-| 0.7 | Same with `raw` in the still config + DNG save | CMA ok? (`/proc/meminfo` CmaFree before and during.) DNG save time |
-| 0.8 | Aspect and crop: profile `16:9` (mode 2028×1080, main 1920×1080, lores 1280×720) and `fast` | `ScalerCrop` metadata and a visual check (circle target) → no stretch? Final sizes after `align_configuration` |
-| 0.9 | `set_controls` latency | Frames until `ExposureTime` metadata reflects the change; FrameDurationLimits change at runtime works within a mode |
-| 0.10 | Unix socket hand-off | Python `sendall` of 200 KB frames to a local reader: per-message latency (expected tens of µs) |
-| 0.11 | Encoder bitrate/profile limits | 1440×1080@40, 1920×1080@50 (`16:9`), 1280×960@120 (`fast`) stable? |
+| 0.5 | JPEG encode of a 2028×1520 YUV420 buffer in a worker thread | Encode time. **Jitter of video `outputframe` intervals during the encode** (GIL impact). If jitter > 10 ms → plan to encode in a subprocess |
+| 0.6 | Aspect and crop: profile `16:9` (mode 2028×1080, main 1920×1080, lores 1280×720) and `fast` | `ScalerCrop` metadata and a visual check (circle target) → no stretch? Final sizes after `align_configuration` |
+| 0.7 | `set_controls` latency | Frames until `ExposureTime` metadata reflects the change; FrameDurationLimits change at runtime works within a mode |
+| 0.8 | Unix socket hand-off | Python `sendall` of 200 KB frames to a local reader: per-message latency (expected tens of µs) |
+| 0.9 | Encoder bitrate/profile limits | 1440×1080@40, 1920×1080@50 (`16:9`), 1280×960@120 (`fast`) stable? |
 
 **Exit criteria:** `docs/SPIKE.md` holds numbers for each row. DESIGN.md
-profiles and risks are updated. Decisions recorded: (a) JPEG encode in a thread
-or a subprocess; (b) encoder kept or restarted around `switch_mode`; (c)
-whether a still AE lock-in is needed.
+profiles and risks are updated. Decision recorded: JPEG encode in a thread or
+in a subprocess.
 
 ---
 
@@ -90,7 +87,7 @@ spawned, supervised and auto-restarted. Everything also runs without a Pi using
    - Reads a `.h264` Annex-B file (needs a small AU splitter: `internal/h264`
      `SplitAnnexB` — used **only** by fakecam), loops it at the configured fps,
      sends `hello` with IMX477-like fake modes and controls, and accepts all
-     commands (stills: writes a generated JPEG via `image/jpeg`).
+     commands (`snapshot` writes a generated JPEG via `image/jpeg`).
    - Test asset generation documented: `ffmpeg -f lavfi -i testsrc2=size=1440x1080:rate=30 -c:v libx264 -profile:v high -bf 0 -g 30 -x264-params repeat-headers=1 testdata/test_1440x1080.h264`
      (a small file is committed in `testdata/`; the generator script is in `spike/`).
 6. **`internal/h264`** (S): `NALTypes(au) []uint8`, `FindSPS(au) []byte`,
@@ -127,13 +124,13 @@ main()
  ├─ send hello
  └─ CtlLoop (main thread): read lines → dispatch
        quick cmds (ping, set_controls)   → handled inline
-       camera cmds (configure, snapshot, capture_full, set_encoder, stop)
+       camera cmds (configure, snapshot, set_encoder, stop)              
                                          → worker thread, guarded by cam_lock (busy if held)
 SocketOutput(picamera2.outputs.Output)
    outputframe(frame, keyframe=True, timestamp=None, *a, **kw)
        → VideoSender.put(AU(bytes(frame), key, ts, wall_us=time.time_ns()//1000))
 post_callback(request)                   # metadata sampler, rate-limited to metadata_hz
-StillWorker                              # thread (or subprocess if M0 says so): encode JPEG/PNG/DNG from copied buffers
+StillWorker                              # thread (or subprocess if M0 says so): encode JPEG from the copied main buffer
 ```
 - Every exception in a command → error response; unhandled exception in a
   thread → `error` event and exit(1) (the supervisor restarts).
@@ -144,10 +141,11 @@ StillWorker                              # thread (or subprocess if M0 says so):
 ### Acceptance criteria
 - [ ] `go test ./...` passes; `go vet` is clean; the binary builds for
   `linux/arm64` with `CGO_ENABLED=0`.
-- [ ] With `fakecam`: open `https://localhost:8080` (or `http://localhost`)
-  and the test pattern plays; killing fakecam shows "reconnecting"; restarting
+- [ ] With `fakecam`: open `http://localhost:8080` and the test pattern
+  plays; killing fakecam shows "reconnecting"; restarting
   it resumes video.
-- [ ] On the Pi: 1440×1080@30 plays in Chrome on the LAN. The stats overlay
+- [ ] On the Pi: 1440×1080@30 plays in Chrome on the LAN (via SSH forward or
+  the insecure-origin flag, see DESIGN §5.1). The stats overlay
   shows the latency estimate. **Glass-to-glass measured** (camera pointed at an
   on-screen ms clock) and recorded in `docs/SPIKE.md`. Target ≤ 150 ms.
 - [ ] `kill -9` of the helper → stream recovers by itself in < 5 s.
@@ -210,103 +208,75 @@ StillWorker                              # thread (or subprocess if M0 says so):
 
 ---
 
-## M3 — Stills — M/L
+## M3 — Snapshot (live capture) — M
 
 ### Tasks
-1. **Helper** (L): `snapshot` (capture_request → copy main [+raw] → release →
-   StillWorker encode → tmp + rename), `capture_full` (sequence from DESIGN
-   §3.3 using the M0 decisions; `stream_end`/`stream_start` around it),
-   `timing_ms` in responses.
-2. **Manager** (S): `Capture(mode, params)`: generate the name
-   `IMG_YYYYMMDD_HHMMSS[_n]`, call the helper with a timeout
-   (snapshot 10 s; full 30 s + shutter time), and send `capturing` /
-   `streaming` events.
-3. **Captures store** (S): `internal/camera/captures.go`: list (name, size,
-   mtime, siblings like `.dng`), delete (both files), name validation
-   (`^IMG_[0-9_]+\.(jpg|png|dng)$`).
-4. **HTTP** (S): `POST /api/capture`, `GET /api/captures`,
-   `GET/DELETE /captures/{name}` (`http.ServeContent`, `Content-Disposition`).
-5. **UI** (M): Snapshot and Full-res buttons (with the shortcut `s`), Still
-   settings (format, quality, raw), a progress overlay during full-res, and a
-   gallery (lazy thumbnails using the image itself, download, delete, a DNG
-   badge).
-6. **"Raw on snapshot"** (S): pipeline flag → `configure.raw = true`; the UI
-   explains the memory cost.
+1. **Helper** (M): `snapshot`: `capture_request()` → copy `main` → `release()`
+   → worker encodes JPEG (thread or subprocess per M0) → `.tmp` + rename →
+   respond with file info and `timing_ms`.
+2. **Manager** (S): `Snapshot(quality) (path, info, error)`: generate the name
+   `IMG_YYYYMMDD_HHMMSS[_n]` in `<data>/captures/`, call the helper with a 10 s
+   timeout.
+3. **HTTP** (S): `POST /api/capture` → `http.ServeContent` of the new file with
+   `Content-Disposition: attachment` and `X-Capture-Width/Height`.
+4. **UI** (S): a **Capture** button (shortcut `c`) → `fetch` POST → blob →
+   trigger download (`<a download>`); show the JPEG quality setting; a brief
+   "captured 2028×1520, 1.8 MB" toast.
 
 ### Acceptance criteria
-- [ ] Snapshot during streaming: **no gap** in the video (seq/pts continuous
-  in the helper log); the JPEG is 2028×1520 (4:3 profile).
-- [ ] Full-res: 4056×3040 JPEG (+ DNG when selected, which opens in
-  RawTherapee/darktable); the video gap is logged and matches M0; the stream
-  resumes on its own.
-- [ ] Exposure of a full-res still visually matches the preview (auto and
-  manual modes).
-- [ ] Ten snapshots in a row: no CMA errors, no helper restarts.
+- [ ] Capture during streaming: **no gap** in the video (seq/pts continuous
+  in the helper log); the JPEG has the main-stream resolution of the active
+  profile (2028×1520 for `4:3`).
+- [ ] Snapshot exposure and colour match the live view.
+- [ ] Twenty captures in a row: no helper restarts, no visible stutter in the
+  stream (or stutter within the M0 jitter numbers).
 
 ---
 
-## M4 — Hardening — M/L
+## M4 — Polish — M
 
-1. **TLS** (M): `-tls-cert/-tls-key`; `-tls-self-signed` generates an ECDSA
-   P-256 cert (SAN: hostname, `*.local` name, all interface IPs) into
-   `<data>/tls/`, valid 1 year, reused across runs.
-2. **Auth** (S): Basic auth middleware (`-auth` / `CAMERA_AUTH`), constant-time
-   compare, applied to everything including `/stream` and `/captures/`. Refuse
-   to start with auth over plain HTTP on a non-loopback address unless
-   `-insecure` is given.
-3. **CSRF** (S): `Origin`/`Sec-Fetch-Site` check on PUT/PATCH/POST/DELETE.
-4. **Backpressure tuning** (M): test with Chrome DevTools throttling (3G/4G
-   profiles) and `tc netem` on the Pi (delay, loss). Tune the queue size, send
-   buffer and client skip thresholds. Document the results.
-5. **Status page details** (S): helper pid, uptime, restarts, versions,
-   CPU temperature (`/sys/class/thermal/thermal_zone0/temp`), throttling
-   (`/sys/devices/platform/soc/soc:firmware/get_throttled` if available).
-6. **Deploy** (S): `deploy/camweb.service` (User=pi, `video` group,
-   `RuntimeDirectory=camweb`, Restart=on-failure), install steps in the README,
-   and CMA notes (`dtoverlay=vc4-kms-v3d,cma-512` if full-res plus raw fails).
-7. **README** (S): quick start, flags, HTTPS options (self-signed /
-   Caddy / Cloudflare Tunnel / Tailscale), troubleshooting.
-8. **Conformance suite** (M): `internal/conformance`: Go tests that start a
-   helper command (env `HELPER_CMD`), act as the server, and check the
-   PROTOCOL.md rules: hello first, configure → stream_start → IDR first,
-   AUs are whole Annex-B frames, set_controls ok/invalid, snapshot files appear
-   atomically, capture_full resumes video before replying, out-of-order
-   responses, ping. Runs against `fakecam` in CI and against `camhelper.py`
-   on the Pi.
+1. **Backpressure tuning** (M): Chrome DevTools throttling (3G/4G profiles)
+   and `tc netem` on the Pi (delay, loss). Tune the queue size, send buffer
+   and client skip thresholds. Write down the results.
+2. **Status details** (S): helper pid, uptime, restarts, versions, CPU
+   temperature (`/sys/class/thermal/thermal_zone0/temp`).
+3. **Deploy** (S): `deploy/camweb.service` (User=pi, `video` group,
+   `RuntimeDirectory=camweb`, Restart=on-failure) and install steps.
+4. **README** (S): quick start, flags, how to get a secure context (SSH
+   forward / browser flag / Tailscale / Cloudflare Tunnel), troubleshooting.
 
 ### Acceptance criteria
-- [ ] Reachable over the internet through a tunnel with auth: 1080p30 at
+- [ ] Through an SSH forward or tunnel over the internet: 1080p30 at
   5 Mbit/s stable for 30 min, latency does not creep (stats overlay).
 - [ ] With 2 Mbit/s throttling and a 6 Mbit/s stream: latency stays bounded
   (< 1.5 s) thanks to drops, and recovers when the throttle is removed.
-- [ ] The conformance suite passes against both fakecam and camhelper.py.
 
 ---
 
-## Later: C++ helper (not in this phase)
-- Implements PROTOCOL.md v1 directly on libcamera plus the V4L2 M2M H.264
-  encoder (`/dev/video11`), and libjpeg-turbo / a DNG writer for stills.
-- Can start with `features: ["snapshot","metadata"]` and add `capture_full`
-  later; the Go server hides unsupported buttons based on `features`.
-- Accepted when it passes `internal/conformance`. Zero changes to the Go
-  server expected.
-- This is also when shared memory (`share_frames`, PROTOCOL §6) becomes
-  interesting, if raw-frame processing is wanted.
+## Later (not in this phase)
+- Full-resolution 12 MP capture (`capture_full`, PROTOCOL §6) and DNG raw.
+- Gallery / capture management, TLS and auth in the app.
+- **Protocol conformance suite** (`internal/conformance`): Go tests that drive
+  any helper (`HELPER_CMD`) through PROTOCOL.md. Needed before the C++ helper.
+- **C++ helper**: implements PROTOCOL.md v1 directly on libcamera plus the
+  V4L2 M2M H.264 encoder and libjpeg-turbo. Accepted when it passes the
+  conformance suite, with zero changes to the Go server.
+- Shared memory frame sharing (PROTOCOL §6) if raw-frame processing is wanted.
 
 ---
 
 ## Testing strategy summary
 | Layer | How |
 |---|---|
-| `proto`, `h264`, `stream`, `camera` (config/diff/mapping/captures) | Go unit tests, table-driven, no hardware |
+| `proto`, `h264`, `stream`, `camera` (config/diff/mapping) | Go unit tests, table-driven, no hardware |
 | `helper` (Go side) | tests with an in-process fake helper over real Unix sockets |
 | end-to-end without a Pi | `fakecam` + camweb + headless Chromium (Playwright script in `spike/` that checks frames are decoded on the canvas) |
-| helper (Python) | conformance suite on the Pi; M0 spike scripts kept as manual benchmarks |
+| helper (Python) | end-to-end on the Pi; M0 spike scripts kept as manual benchmarks |
 | performance and latency | glass-to-glass photo, stats overlay, helper `timing_ms`, `tc netem` / DevTools throttling |
 
 ## Dependencies (final)
 - Go: **stdlib only**.
-- Python: system `python3`, `python3-picamera2` (with numpy and its JPEG/DNG
+- Python: system `python3`, `python3-picamera2` (with numpy and its JPEG
   helpers), **no pip installs**.
 - Browser: no libraries.
 - Dev only: `ffmpeg` to generate test streams (optional; a small test file is
