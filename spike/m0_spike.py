@@ -80,6 +80,7 @@ class Recorder:
     def __init__(self):
         from picamera2.outputs import Output
         rec = self
+        self.encoder = None  # set by the caller, for firsttimestamp
 
         class Out(Output):
             def outputframe(self, frame, keyframe=True, timestamp=None, *args, **kwargs):
@@ -87,6 +88,7 @@ class Recorder:
 
         self.output = Out()
         self.frames = []  # (mono_ns, len, keyframe, timestamp, vcl_pictures, has_sps)
+        self.lat = []     # sensor timestamp -> outputframe, ms (via encoder.firsttimestamp)
         self.extra = None
 
     def on(self, frame, keyframe, timestamp, args, kwargs):
@@ -95,6 +97,9 @@ class Recorder:
         types = nal_types(data)
         pictures = sum(1 for t, first in types if 1 <= t <= 5 and first)
         self.frames.append((now, len(data), bool(keyframe), timestamp, pictures, any(t == 7 for t, _ in types)))
+        first = getattr(self.encoder, "firsttimestamp", None)
+        if timestamp is not None and isinstance(first, int):
+            self.lat.append((now // 1000 - (first + timestamp)) / 1000)
         if self.extra is None:
             self.extra = (len(args), sorted(kwargs))
 
@@ -147,6 +152,7 @@ def exp_encode(picam2, seconds=8, snapshots=10):
     except TypeError:
         enc = H264Encoder(bitrate=6_000_000, repeat=True, iperiod=30)
         print("- NOTE: H264Encoder has no `profile` argument in this version")
+    rec.encoder = enc
     cpu0 = cpu_seconds()
     picam2.start_encoder(enc, rec.output, name="lores")
     picam2.start()
@@ -202,6 +208,7 @@ def exp_encode(picam2, seconds=8, snapshots=10):
             if st in sensor_ts and abs(f[0] - st) < 5e9:
                 lat.append((f[0] - st) / 1e6)
     print("- sensor timestamp -> outputframe (if monotonic clock): %s" % summary(lat, " ms"))
+    print("- sensor timestamp -> outputframe via encoder.firsttimestamp: %s" % summary(rec.lat, " ms"))
     post_lat = [(v - k) / 1e6 for k, v in sensor_ts.items() if k and abs(v - k) < 5e9]
     print("- sensor timestamp -> post_callback: %s" % summary(post_lat, " ms"))
     iv = [(fr[i][0] - fr[i - 1][0]) / 1e6 for i in range(1, baseline_n)]
@@ -319,14 +326,23 @@ def exp_socket(n=300, size=200_000):
 
 # ------------------------------------------------------------------ 0.9
 
-def exp_limits(picam2, fps=40, seconds=6):
+def exp_limits(picam2, seconds=6):
     from picamera2.encoders import H264Encoder
-    print("## 0.9 Encoder limits (1440x1080@%d)\n" % fps)
-    print("| bitrate | delivered fps | Mbit/s | CPU % |\n|---|---|---|---|")
-    for br in (2_000_000, 6_000_000, 12_000_000):
+    print("## 0.9 Encoder limits (1440x1080)\n")
+    print("Bitrate accuracy with and without `framerate=` passed to H264Encoder.\n")
+    print("| fps | framerate arg | bitrate | delivered fps | Mbit/s | CPU % |\n|---|---|---|---|---|---|")
+    for fps, br, pass_fr in ((30, 6_000_000, False), (30, 6_000_000, True), (40, 6_000_000, False),
+                             (40, 6_000_000, True), (40, 2_000_000, True), (40, 12_000_000, True)):
         picam2.configure(video_config(picam2, fps=fps))
         rec = Recorder()
-        enc = H264Encoder(bitrate=br, repeat=True, iperiod=fps)
+        kw = dict(bitrate=br, repeat=True, iperiod=fps)
+        if pass_fr:
+            kw["framerate"] = fps
+        try:
+            enc = H264Encoder(**kw)
+        except TypeError:
+            print("| %d | not supported | | | | |" % fps)
+            continue
         c0 = cpu_seconds()
         picam2.start_encoder(enc, rec.output, name="lores")
         picam2.start()
@@ -337,7 +353,8 @@ def exp_limits(picam2, fps=40, seconds=6):
         cpu = (cpu_seconds() - c0) / (seconds + 1)
         picam2.stop_encoder(enc)
         picam2.stop()
-        print("| %d M | %.1f | %.2f | %.0f |" % (br // 1_000_000, (n1 - n0) / (t1 - t0), (b1 - b0) * 8 / (t1 - t0) / 1e6, cpu * 100))
+        print("| %d | %s | %d M | %.1f | %.2f | %.0f |" % (fps, "yes" if pass_fr else "no", br // 1_000_000,
+                                                      (n1 - n0) / (t1 - t0), (b1 - b0) * 8 / (t1 - t0) / 1e6, cpu * 100))
     print()
 
 

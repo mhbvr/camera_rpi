@@ -73,6 +73,19 @@ func TestDiff(t *testing.T) {
 	if Diff(a, b) != ApplyLive {
 		t.Fatal("live")
 	}
+	f := a
+	f.Controls.FPS = 40
+	if Diff(a, f) != ApplyEncoder {
+		t.Fatal("fps change must restart the encoder (rate control)")
+	}
+	m := a
+	m.Controls.AutoExposure, m.Controls.ShutterUS = false, 20_000 // fits in 1/30 s: frame rate unchanged
+	if Diff(a, m) != ApplyLive {
+		t.Fatal("manual shutter within the frame time should be live")
+	}
+	if r := EncoderFrameRate(f.Controls); r != 40 {
+		t.Fatalf("encoder frame rate %v", r)
+	}
 	b.Encoder.Bitrate = 1_000_000
 	if Diff(a, b) != ApplyEncoder {
 		t.Fatal("encoder")

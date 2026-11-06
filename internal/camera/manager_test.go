@@ -155,6 +155,21 @@ func TestManagerFlow(t *testing.T) {
 		t.Fatalf("apply encoder: %v %v %s", kind, err, f.last().Method)
 	}
 
+	// fps change → set_controls (FrameDurationLimits) then set_encoder with the frame rate
+	n0 := f.count()
+	kind, _, err = m.Apply(ctx, []byte(`{"controls":{"fps":40}}`))
+	if err != nil || kind != ApplyEncoder || f.count() != n0+2 {
+		t.Fatalf("apply fps: %v %v calls=%d", kind, err, f.count()-n0)
+	}
+	f.mu.Lock()
+	first, second := f.calls[n0], f.calls[n0+1]
+	f.mu.Unlock()
+	var se proto.SetEncoderParams
+	_ = json.Unmarshal(second.Params, &se)
+	if first.Method != proto.MethodSetControls || second.Method != proto.MethodSetEncoder || se.FrameRate != 40 {
+		t.Fatalf("fps calls: %s, %s %+v", first.Method, second.Method, se)
+	}
+
 	// stream size → configure
 	kind, _, err = m.Apply(ctx, []byte(`{"pipeline":{"stream_size":[640,480]}}`))
 	if err != nil || kind != ApplyReconfigure || f.last().Method != proto.MethodConfigure {

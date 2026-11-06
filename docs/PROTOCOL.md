@@ -99,7 +99,7 @@ encoders on both sides emit single-line JSON by default).
 | `hello` | see §3.4 | first message on connect |
 | `state` | `{"state": "idle"\|"starting"\|"streaming"\|"reconfiguring"\|"error", "detail": "..."}` | on every change |
 | `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "FocusFoM": 1234, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
-| `stats` | `{"fps": 30.0, "frames": 12345}` | 1 Hz |
+| `stats` | `{"fps": 30.0, "frames": 12345, "latency_ms": 45.2}` (`latency_ms`: mean sensor timestamp → socket write over recent frames, when known) | 1 Hz |
 | `error` | `{"code": -32003, "message": "..."}` | asynchronous errors (for example the encoder failed) |
 
 ### 3.3 Methods
@@ -116,7 +116,7 @@ helper stops, reconfigures and restarts (the video channel gets a new
   "transform": {"hflip": false, "vflip": false},     // from server startup flags
   "buffer_count": 6,
   "controls": {"FrameDurationLimits": [33333,33333], "AeEnable": true},
-  "encoder": {"codec": "h264", "bitrate": 6000000, "iperiod": 30},   // H.264 profile fixed: high
+  "encoder": {"codec": "h264", "bitrate": 6000000, "iperiod": 30, "framerate": 30.0},   // H.264 profile fixed: high
   "metadata_hz": 2
 }}
 → {"jsonrpc":"2.0","id":1,"result":{
@@ -146,9 +146,14 @@ needs no name tables. The names come from `hello.controls[*].values`.
 Restarts only the encoder with new parameters. The video channel gets a new
 `stream_start` and starts with an IDR.
 ```json
-{"jsonrpc":"2.0","id":3,"method":"set_encoder","params":{"bitrate":4000000,"iperiod":30}}
+{"jsonrpc":"2.0","id":3,"method":"set_encoder","params":{"bitrate":4000000,"iperiod":30,"framerate":30.0}}
 → {"jsonrpc":"2.0","id":3,"result":{"session": 4}}
 ```
+
+`framerate` (in `configure.encoder` and `set_encoder`) is passed to the
+encoder's rate control. Without it the Pi encoder assumes 30 fps and the
+bitrate scales with fps/30 (M0 spike 0.9). The server therefore sends
+`set_encoder` after any frame-rate change.
 
 #### `snapshot`
 Captures one frame from the running `main` stream as JPEG **without
@@ -217,7 +222,7 @@ offset size field
 5      1    flags         bit0 keyframe (IDR), bit1 contains SPS/PPS
 6      2    reserved (0)
 8      8    seq           u64 frame counter, reset to 0 at each stream_start
-16     8    pts_us        u64 sensor timestamp of the frame in µs (libcamera SensorTimestamp; clock domain checked in M0)
+16     8    pts_us        u64 sensor timestamp of the frame in µs, CLOCK_MONOTONIC (Picamera2's relative timestamp + encoder.firsttimestamp; relative to the first frame if that is unavailable)
 24     8    wall_us       u64 helper wall clock (µs since Unix epoch) when the AU was handed to the socket
 32     N    payload
 ```
@@ -226,7 +231,7 @@ offset size field
   **Annex-B** format (start codes included). With `repeat=True`, IDR AUs carry
   SPS+PPS (flags bit1). The first AU after `stream_start` **must be an IDR**.
 - **type 2 (stream_start):** JSON payload
-  `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30}`.
+  `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30, "framerate": 30.0}`.
   Sent whenever the encoder (re)starts. The server resets all viewers to
   "wait for keyframe".
 - **type 3 (stream_end):** JSON `{"session": 3, "reason": "reconfigure"|"encoder"|"stop"|"error"}`.

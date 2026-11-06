@@ -111,9 +111,10 @@ type Transform struct {
 
 // EncoderCfg configures the H.264 encoder.
 type EncoderCfg struct {
-	Codec   string `json:"codec"`
-	Bitrate int    `json:"bitrate"`
-	IPeriod int    `json:"iperiod"`
+	Codec     string  `json:"codec"`
+	Bitrate   int     `json:"bitrate"`
+	IPeriod   int     `json:"iperiod"`
+	FrameRate float64 `json:"framerate"` // for the encoder's rate control
 }
 
 // ConfigureResult is the result of "configure".
@@ -129,8 +130,9 @@ type SetControlsParams struct {
 
 // SetEncoderParams are the params of "set_encoder".
 type SetEncoderParams struct {
-	Bitrate int `json:"bitrate"`
-	IPeriod int `json:"iperiod"`
+	Bitrate   int     `json:"bitrate"`
+	IPeriod   int     `json:"iperiod"`
+	FrameRate float64 `json:"framerate"`
 }
 
 // SetEncoderResult is the result of "set_encoder".
@@ -167,8 +169,9 @@ type StateParams struct {
 
 // StatsParams are the params of the "stats" notification.
 type StatsParams struct {
-	FPS    float64 `json:"fps"`
-	Frames int64   `json:"frames"`
+	FPS       float64  `json:"fps"`
+	Frames    int64    `json:"frames"`
+	LatencyMS *float64 `json:"latency_ms,omitempty"` // sensor timestamp -> socket write
 }
 
 // StreamStart is the JSON payload of a VideoStreamStart message.

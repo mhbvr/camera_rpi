@@ -200,4 +200,9 @@ class Picamera2:
                 au = self._aus[enc.index % len(self._aus)]
                 enc.index += 1
                 key = b"\x00\x00\x01\x65" in au or b"\x00\x00\x01\x25" in au or b"\x00\x00\x01\x45" in au
-                enc.output.outputframe(au, key, time.monotonic_ns() // 1000)
+                # Like Picamera2: timestamp relative to the first frame, and
+                # firsttimestamp = that frame's SensorTimestamp in µs.
+                ts = time.monotonic_ns() // 1000 - 30000  # pretend 30 ms capture latency
+                if enc.firsttimestamp is None:
+                    enc.firsttimestamp = ts
+                enc.output.outputframe(au, key, ts - enc.firsttimestamp, None, False)

@@ -14,6 +14,7 @@ Dependencies: Raspberry Pi OS python3-picamera2 (with numpy, simplejpeg).
 """
 
 import argparse
+import collections
 import json
 import logging
 import os
@@ -209,12 +210,18 @@ class Camera:
         self.metadata_hz = 2.0
         self._last_md = 0.0
         self.video_failed = False
+        self.latency_ms = collections.deque(maxlen=60)  # sensor timestamp -> socket write
         self.picam2.post_callback = self._post_callback
 
     # -- info
 
     def hello(self):
         import picamera2
+        try:
+            from importlib.metadata import version
+            impl_version = version("picamera2")
+        except Exception:  # noqa: BLE001
+            impl_version = getattr(picamera2, "__version__", "")
         modes = []
         try:
             for m in self.picam2.sensor_modes:
@@ -243,7 +250,7 @@ class Camera:
         return {
             "proto": PROTO_VERSION,
             "impl": "picamera2",
-            "impl_version": getattr(picamera2, "__version__", ""),
+            "impl_version": impl_version,
             "libcamera": lc_version,
             "camera": {
                 "model": props.get("Model", ""),
@@ -291,7 +298,7 @@ class Camera:
         )
         self.picam2.configure(cfg)
         self.metadata_hz = float(p.get("metadata_hz", 2))
-        self.enc_params = {"bitrate": int(enc["bitrate"]), "iperiod": int(enc["iperiod"])}
+        self.enc_params = _enc_params(enc)
         self.lores_size = tuple(lores["size"])
         fdl = controls.get("FrameDurationLimits")
         self.fps = round(1e6 / fdl[0], 3) if fdl else 0.0
@@ -307,7 +314,7 @@ class Camera:
         if not self.streaming:
             raise RpcError(E_NOT_CONFIGURED, "not streaming")
         try:
-            self.enc_params = {"bitrate": int(p["bitrate"]), "iperiod": int(p["iperiod"])}
+            self.enc_params = _enc_params(p)
         except (KeyError, TypeError, ValueError) as e:
             raise RpcError(E_INVALID_PARAMS, "bad set_encoder params: %s" % e)
         self._stop_encoder("encoder")
@@ -400,10 +407,23 @@ class Camera:
         self.session += 1
         self.seq = 0
         kw = dict(bitrate=self.enc_params["bitrate"], repeat=True, iperiod=self.enc_params["iperiod"])
-        try:
-            enc = H264Encoder(profile="high", **kw)
-        except TypeError:  # older Picamera2 without the profile argument
-            enc = H264Encoder(**kw)
+        # The encoder's rate control assumes a frame rate; without it the
+        # bitrate overshoots at fps != 30 (M0 spike 0.9: +33 % at 40 fps).
+        fr = self.enc_params.get("framerate") or self.fps
+        if fr:
+            kw["framerate"] = fr
+        enc = None
+        for extra in ({"profile": "high"}, {}):  # older Picamera2: no profile / framerate args
+            for args in (dict(kw, **extra), dict({k: v for k, v in kw.items() if k != "framerate"}, **extra)):
+                try:
+                    enc = H264Encoder(**args)
+                    break
+                except TypeError:
+                    continue
+            if enc is not None:
+                break
+        if enc is None:
+            raise RpcError(E_CAMERA, "cannot create H264Encoder")
         if self.output is None:
             self.output = _make_output(self)
         self.video.send_json(T_STREAM_START, {
@@ -411,6 +431,7 @@ class Camera:
             "width": self.lores_size[0], "height": self.lores_size[1],
             "fps": self.fps, "profile": "high",
             "bitrate": self.enc_params["bitrate"], "iperiod": self.enc_params["iperiod"],
+            "framerate": fr,
         })
         self.picam2.start_encoder(enc, self.output, name="lores")
         self.encoder = enc
@@ -434,8 +455,18 @@ class Camera:
         flags = F_KEY if keyframe else 0
         if keyframe and has_sps(data):
             flags |= F_CONFIG
+        # Picamera2 passes the timestamp relative to the encoder's first frame
+        # (M0 spike: 0, 33324, ...); encoder.firsttimestamp holds that frame's
+        # SensorTimestamp in µs (CLOCK_MONOTONIC), giving the absolute time.
+        pts = int(timestamp or 0)
+        first = getattr(self.encoder, "firsttimestamp", None) if self.encoder is not None else None
+        if isinstance(first, int):
+            pts += first
+            lat = (time.monotonic_ns() // 1000 - pts) / 1000.0
+            if 0 <= lat < 5000:
+                self.latency_ms.append(lat)
         try:
-            self.video.send(T_AU, flags, self.seq, int(timestamp or 0), data)
+            self.video.send(T_AU, flags, self.seq, pts, data)
         except OSError as e:
             # The server is gone: stop reading ctl so main() exits.
             self.video_failed = True
@@ -483,6 +514,13 @@ def _make_output(cam):
             cam.on_frame(frame, keyframe, timestamp)
 
     return SocketOutput()
+
+
+def _enc_params(p):
+    out = {"bitrate": int(p["bitrate"]), "iperiod": int(p["iperiod"])}
+    if p.get("framerate"):
+        out["framerate"] = float(p["framerate"])
+    return out
 
 
 def _stream_info(s):
@@ -578,7 +616,11 @@ def stats_loop(cam, ctl, stop):
     while not stop.wait(1.0):
         if cam.streaming:
             n = cam.frames
-            ctl.notify("stats", {"fps": n - last, "frames": n})
+            st = {"fps": n - last, "frames": n}
+            lat = list(cam.latency_ms)
+            if lat:
+                st["latency_ms"] = round(sum(lat) / len(lat), 1)
+            ctl.notify("stats", st)
             last = n
         else:
             last = cam.frames
