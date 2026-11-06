@@ -150,10 +150,13 @@ Restarts only the encoder with new parameters. The video channel gets a new
 → {"jsonrpc":"2.0","id":3,"result":{"session": 4}}
 ```
 
-`framerate` (in `configure.encoder` and `set_encoder`) is passed to the
-encoder's rate control. Without it the Pi encoder assumes 30 fps and the
-bitrate scales with fps/30 (M0 spike 0.9). The server therefore sends
-`set_encoder` after any frame-rate change.
+`framerate` (in `configure.encoder` and `set_encoder`) is the actual frame
+rate. The Pi encoder's rate control assumes 30 fps whatever Picamera2 is told,
+so delivered bitrate = requested × fps / 30 (M0 spike 0.9). The Picamera2
+helper compensates by handing the encoder `bitrate × 30 / framerate` (capped at
+25 Mbit/s) and reports it as `encoder_bitrate` in `stream_start`. A C++ helper
+that sets the encoder frame rate properly would not need this. Either way, the
+server sends `set_encoder` after any frame-rate change.
 
 #### `snapshot`
 Captures one frame from the running `main` stream as JPEG **without
@@ -231,7 +234,7 @@ offset size field
   **Annex-B** format (start codes included). With `repeat=True`, IDR AUs carry
   SPS+PPS (flags bit1). The first AU after `stream_start` **must be an IDR**.
 - **type 2 (stream_start):** JSON payload
-  `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30, "framerate": 30.0}`.
+  `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30, "framerate": 30.0, "encoder_bitrate": 6000000}`.
   Sent whenever the encoder (re)starts. The server resets all viewers to
   "wait for keyframe".
 - **type 3 (stream_end):** JSON `{"session": 3, "reason": "reconfigure"|"encoder"|"stop"|"error"}`.

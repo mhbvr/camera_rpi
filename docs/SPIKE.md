@@ -1,4 +1,4 @@
-# M0 spike results (2026-11-06 16:02)
+# M0 spike results (2026-11-06 16:14)
 
 ## 0.1 Camera info
 
@@ -70,20 +70,21 @@ Enum names:
 ## 0.2-0.5 Encoding, latency, snapshots while encoding
 
 - outputframe extra args: 2 positional, kwargs []
-- callbacks: 342; callbacks with != 1 picture (should be 0): **0**
+- callbacks: 341; callbacks with != 1 picture (should be 0): **0**
 - keyframes: 12; keyframes with SPS: 12; non-key with SPS: 0
 - first callback keyframe: True
-- `timestamp` argument sample: [0, 33324, 66647] (type int)
-- SensorTimestamp sample: [587098297000, 587131621000, 587164944000]
-- timestamp*1000 == SensorTimestamp for 0 of 342 frames
+- `timestamp` argument sample: [0, 33324, 66649] (type int)
+- SensorTimestamp sample: [1299866782000, 1299900106000, 1299933431000]
+- timestamp*1000 == SensorTimestamp for 0 of 341 frames
 - sensor timestamp -> outputframe (if monotonic clock): n/a
-- sensor timestamp -> post_callback: mean 39.99 ms, p50 43.48, p95 44.96, max 49.48 (n=342)
-- callback interval, baseline: mean 33.42 ms, p50 33.31, p95 35.34, max 52.60 (n=217)
-- callback interval during snapshots (GIL impact): mean 33.10 ms, p50 33.23, p95 46.17, max 50.84 (n=93)
+- sensor timestamp -> outputframe via encoder.firsttimestamp: mean 60.29 ms, p50 52.78, p95 73.43, max 85.09 (n=341)
+- sensor timestamp -> post_callback: mean 38.93 ms, p50 35.27, p95 44.73, max 49.19 (n=341)
+- callback interval, baseline: mean 33.41 ms, p50 33.32, p95 34.95, max 51.98 (n=216)
+- callback interval during snapshots (GIL impact): mean 33.12 ms, p50 33.22, p95 46.73, max 48.34 (n=93)
 - timestamp gaps > 1.5 frame (dropped frames): **0**
-- snapshot copy (capture_request+copy): mean 14.66 ms, p50 10.64, p95 35.97, max 35.97 (n=10)
-- snapshot JPEG encode 2028x1520: mean 95.16 ms, p50 89.33, p95 152.59, max 152.59 (n=10)
-- process CPU while encoding: 27% of one core
+- snapshot copy (capture_request+copy): mean 13.37 ms, p50 10.99, p95 30.75, max 30.75 (n=10)
+- snapshot JPEG encode 2028x1520: mean 93.96 ms, p50 89.13, p95 144.85, max 144.85 (n=10)
+- process CPU while encoding: 24% of one core
 
 ## 0.6 Stream sizes in the 2028x1520 mode
 
@@ -104,48 +105,57 @@ Check the images: a circle must stay round in both lores and main.
 
 ## 0.8 Unix socket hand-off
 
-- 200 KB messages, sender -> reader complete: mean 0.38 ms, p50 0.37, p95 0.42, max 1.20 (n=300)
+- 200 KB messages, sender -> reader complete: mean 0.37 ms, p50 0.36, p95 0.43, max 0.96 (n=300)
 
-## 0.9 Encoder limits (1440x1080@40)
+## 0.9 Encoder limits (1440x1080)
 
-| bitrate | delivered fps | Mbit/s | CPU % |
-|---|---|---|---|
-| 2 M | 40.0 | 2.68 | 42 |
-| 6 M | 39.8 | 7.96 | 28 |
-| 12 M | 40.2 | 16.16 | 44 |
+Bitrate accuracy with and without `framerate=` passed to H264Encoder.
+
+| fps | framerate arg | bitrate | delivered fps | Mbit/s | CPU % |
+|---|---|---|---|---|---|
+| 30 | no | 6 M | 30.0 | 6.03 | 33 |
+| 30 | yes | 6 M | 29.8 | 6.03 | 21 |
+| 40 | no | 6 M | 40.0 | 8.04 | 43 |
+| 40 | yes | 6 M | 40.0 | 8.03 | 42 |
+| 40 | yes | 2 M | 39.8 | 2.69 | 28 |
+| 40 | yes | 12 M | 39.8 | 16.00 | 28 |
+
 
 ---
 
-## Analysis (2026-11-06)
+## Analysis (re-run, 2026-11-06 16:14)
 
-Measured on a Raspberry Pi 4 with the HQ camera. "OK" means the design
-assumption holds.
+Measured on a Raspberry Pi 4 with the HQ camera. The first run (16:02) gave
+the same numbers for 0.1–0.8; this run adds two measurements (marked new).
 
 | # | Question | Result | Verdict / action |
 |---|---|---|---|
-| 0.1 | Sensor modes | This driver offers 8/10/12-bit variants of every mode. 2028×1520 12-bit runs up to **45.19 fps** (10-bit 53.8, 8-bit 66.4); full-res 12-bit 11.7 fps | OK: our mode exists; the 40 fps limit is safe |
-| 0.1 | Exposure controls | `ExposureTimeMode` / `AnalogueGainMode` exist (newer libcamera) | the server already uses them when present |
-| 0.1 | Control ranges | `camera_controls` reflects the *last configured* mode (`FrameDurationLimits` min 57502 µs = the full-res 8-bit mode, left over from enumerating `sensor_modes`) | only the maxima of ExposureTime/AnalogueGain are used for validation, and those match across modes; documented |
-| 0.1 | Colour space | video config is Rec709 (limited range) | the snapshot's range expansion applies; small hue difference from the 709→601 matrix remains (accepted) |
-| 0.2 | One frame per encoder callback | 342/342 callbacks hold exactly one picture; every keyframe carries SPS; first callback is a keyframe | OK: no splitter needed |
-| 0.2 | `outputframe` signature | 2 extra positional args | OK: handled by `*args` |
-| 0.2 | `timestamp` argument | **relative** to the first frame (0, 33324, …), not `SensorTimestamp` | fixed: helper adds `encoder.firsttimestamp`, so `pts_us` is the absolute sensor time |
-| 0.3 | Capture latency | sensor timestamp → request completed (post_callback): **40 ms** mean, 43 ms p50, with 33 ms exposure in a dark scene | encoder latency not measured yet: the re-run reports sensor → encoder callback directly |
-| 0.4 | Snapshot while encoding | **0 dropped frames**; copy 15 ms mean (36 ms p95) | OK |
-| 0.5 | JPEG encode, GIL impact | encode 95 ms mean (153 ms p95). Callback interval p95 35 → 46 ms during snapshots, max unchanged (52 → 51 ms) | acceptable: **keep encoding in a thread** (decision recorded), no subprocess |
-| 0.5 | Helper CPU | 27 % of one core at 1440×1080@30 | OK |
-| 0.6 | Stream sizes | all three applied unchanged; full-sensor `ScalerCrop` (8,16,4056,3040) | **visual check of `spike_out/*.jpg` still needed** (circle stays round) |
-| 0.7 | Manual exposure latency | applied after **10 frames** (~330 ms at 30 fps) | expected libcamera pipeline depth (buffers in flight + sensor delay). Fewer *Camera buffers* should shorten it; try 4 |
-| 0.7 | Back to auto | `ExposureTimeMode/AnalogueGainMode = 0` returns to auto (33013 µs / gain 15.8 again) | OK: matches the server's mapping |
-| 0.7 | Frame rate at runtime | `FrameDurationLimits` → 50000 gives 49992 µs frames | OK |
-| 0.8 | Unix socket, 200 KB | 0.38 ms mean | OK: negligible |
-| 0.9 | Encoder at 40 fps | 40 fps delivered at 2–12 Mbit/s. **Bitrate overshoots by 33 %** (2→2.68, 6→7.96, 12→16.2 Mbit/s); 40/30 = 1.33, so the encoder's rate control assumes 30 fps | fixed: the frame rate is passed to `H264Encoder(framerate=…)`, and a frame-rate change now restarts the encoder |
+| 0.1 | Sensor modes | 8/10/12-bit variants of every mode. 2028×1520 12-bit up to **45.19 fps** | OK: the 40 fps limit is safe |
+| 0.1 | Exposure controls | `ExposureTimeMode` / `AnalogueGainMode` present | OK: the server uses them |
+| 0.1 | Control ranges | `camera_controls` reflects the last configured mode (`FrameDurationLimits` min 57502 µs is the full-res 8-bit mode) | only ExposureTime/AnalogueGain maxima are used, and they match across modes |
+| 0.1 | Colour space | Rec709 (limited range) | the snapshot expands the range; a small 709 vs 601 hue difference is accepted |
+| 0.2 | One frame per encoder callback | 341/341 hold exactly one picture; every keyframe carries SPS; the first callback is a keyframe | OK |
+| 0.2 | `timestamp` argument | relative to the first frame; `encoder.firsttimestamp + timestamp` gives the sensor time in µs (CLOCK_MONOTONIC) | OK: confirmed by the plausible latency below; the helper uses it |
+| 0.3 | Capture → request complete | sensor timestamp → post_callback **35 ms p50**, 39 ms mean (33 ms exposure, dark scene) | as expected |
+| 0.3 | **(new)** Capture → encoder output | sensor timestamp → `outputframe` **53 ms p50**, 60 ms mean, 73 ms p95, 85 ms max | so the hardware encode takes ~18 ms p50; the tail is probably the large I-frames |
+| 0.4 | Snapshot while encoding | **0 dropped frames**; copy 13 ms mean | OK |
+| 0.5 | JPEG encode, GIL impact | encode 94 ms mean; callback interval p95 35 → 47 ms during snapshots, max unchanged | OK: encoding stays in a thread |
+| 0.5 | Helper CPU | 24 % of one core at 1440×1080@30 | OK |
+| 0.6 | Stream sizes | applied unchanged; full-sensor ScalerCrop | **visual check of `spike_out/*.jpg` still needed** |
+| 0.7 | Manual exposure latency | 10 frames | libcamera pipeline depth; try *Camera buffers* = 4 |
+| 0.7 | Back to auto / runtime frame rate | work | OK |
+| 0.8 | Unix socket, 200 KB | 0.37 ms | OK |
+| 0.9 | **(new)** Bitrate with `framerate=` | **no effect**: 40 fps, 6 Mbit/s requested → 8.03 delivered with and without it. Exact fit to `delivered = requested × fps / 30` (6.03 at 30 fps; 2.69 / 8.03 / 16.0 at 40 fps) | **fixed differently:** the helper now gives the encoder `bitrate × 30 / fps` (capped at 25 Mbit/s). Frame-rate changes still restart the encoder, because the compensation depends on fps |
+
+### Camera-side latency budget (dark scene, 33 ms exposure)
+Sensor timestamp → request complete 35 ms → encoder output 53 ms (p50) →
+socket < 1 ms. Network, decode and display come on top of that. Glass-to-glass
+on the LAN should be roughly 70–100 ms. Shorter exposures in normal light
+reduce the first stage.
 
 ### Follow-ups
-- Re-run `python3 spike/m0_spike.py encode limits` to confirm the bitrate fix
-  (table now compares with and without `framerate=`) and to get sensor →
-  encoder latency.
+- Re-run `python3 spike/m0_spike.py limits` to confirm the compensation
+  (rows marked "compensated: yes" should deliver the requested bitrate,
+  including at 15 fps).
 - Check `spike_out/*.jpg` for aspect ratio.
-- Measure glass-to-glass latency with camweb (camera pointed at an on-screen
-  millisecond clock). The stats overlay now also shows the camera-side
-  latency (sensor timestamp → socket write).
+- Measure glass-to-glass latency with camweb.

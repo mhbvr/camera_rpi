@@ -40,6 +40,12 @@ E_PARSE, E_INVALID_REQUEST, E_METHOD_NOT_FOUND, E_INVALID_PARAMS, E_INTERNAL = (
 E_BUSY, E_NOT_CONFIGURED, E_CAMERA, E_IO = -32001, -32002, -32003, -32004
 
 MAX_LINE = 1 << 20
+
+# The Pi's H.264 encoder rate control assumes 30 fps, even when Picamera2 is
+# given framerate= (M0 spike 0.9 re-run: delivered = requested * fps / 30
+# with and without it). The helper scales the bitrate it hands to the encoder.
+ENCODER_ASSUMED_FPS = 30.0
+MAX_ENCODER_BITRATE = 25_000_000
 METADATA_KEYS = ("ExposureTime", "AnalogueGain", "DigitalGain", "ColourGains",
                  "ColourTemperature", "Lux", "FrameDuration", "FocusFoM",
                  "SensorTimestamp")
@@ -406,12 +412,9 @@ class Camera:
         from picamera2.encoders import H264Encoder
         self.session += 1
         self.seq = 0
-        kw = dict(bitrate=self.enc_params["bitrate"], repeat=True, iperiod=self.enc_params["iperiod"])
-        # The encoder's rate control assumes a frame rate; without it the
-        # bitrate overshoots at fps != 30 (M0 spike 0.9: +33 % at 40 fps).
-        fr = self.enc_params.get("framerate") or self.fps
-        if fr:
-            kw["framerate"] = fr
+        fr = self.enc_params.get("framerate") or self.fps or ENCODER_ASSUMED_FPS
+        enc_bitrate = encoder_bitrate(self.enc_params["bitrate"], fr)
+        kw = dict(bitrate=enc_bitrate, repeat=True, iperiod=self.enc_params["iperiod"], framerate=fr)
         enc = None
         for extra in ({"profile": "high"}, {}):  # older Picamera2: no profile / framerate args
             for args in (dict(kw, **extra), dict({k: v for k, v in kw.items() if k != "framerate"}, **extra)):
@@ -431,7 +434,7 @@ class Camera:
             "width": self.lores_size[0], "height": self.lores_size[1],
             "fps": self.fps, "profile": "high",
             "bitrate": self.enc_params["bitrate"], "iperiod": self.enc_params["iperiod"],
-            "framerate": fr,
+            "framerate": fr, "encoder_bitrate": enc_bitrate,
         })
         self.picam2.start_encoder(enc, self.output, name="lores")
         self.encoder = enc
@@ -514,6 +517,11 @@ def _make_output(cam):
             cam.on_frame(frame, keyframe, timestamp)
 
     return SocketOutput()
+
+
+def encoder_bitrate(bitrate, fps):
+    """Bitrate to give the encoder so that `bitrate` is delivered at `fps`."""
+    return int(min(MAX_ENCODER_BITRATE, round(bitrate * ENCODER_ASSUMED_FPS / fps)))
 
 
 def _enc_params(p):

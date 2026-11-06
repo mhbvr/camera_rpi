@@ -329,15 +329,15 @@ def exp_socket(n=300, size=200_000):
 def exp_limits(picam2, seconds=6):
     from picamera2.encoders import H264Encoder
     print("## 0.9 Encoder limits (1440x1080)\n")
-    print("Bitrate accuracy with and without `framerate=` passed to H264Encoder.\n")
-    print("| fps | framerate arg | bitrate | delivered fps | Mbit/s | CPU % |\n|---|---|---|---|---|---|")
-    for fps, br, pass_fr in ((30, 6_000_000, False), (30, 6_000_000, True), (40, 6_000_000, False),
-                             (40, 6_000_000, True), (40, 2_000_000, True), (40, 12_000_000, True)):
+    import camhelper
+    print("Bitrate accuracy without and with camhelper's compensation (bitrate * 30 / fps).\n")
+    print("| fps | compensated | requested | delivered fps | Mbit/s | CPU % |\n|---|---|---|---|---|---|")
+    for fps, br, comp in ((30, 6_000_000, False), (40, 6_000_000, False), (40, 6_000_000, True),
+                          (40, 2_000_000, True), (40, 12_000_000, True), (15, 6_000_000, False),
+                          (15, 6_000_000, True)):
         picam2.configure(video_config(picam2, fps=fps))
         rec = Recorder()
-        kw = dict(bitrate=br, repeat=True, iperiod=fps)
-        if pass_fr:
-            kw["framerate"] = fps
+        kw = dict(bitrate=camhelper.encoder_bitrate(br, fps) if comp else br, repeat=True, iperiod=fps)
         try:
             enc = H264Encoder(**kw)
         except TypeError:
@@ -353,7 +353,7 @@ def exp_limits(picam2, seconds=6):
         cpu = (cpu_seconds() - c0) / (seconds + 1)
         picam2.stop_encoder(enc)
         picam2.stop()
-        print("| %d | %s | %d M | %.1f | %.2f | %.0f |" % (fps, "yes" if pass_fr else "no", br // 1_000_000,
+        print("| %d | %s | %d M | %.1f | %.2f | %.0f |" % (fps, "yes" if comp else "no", br // 1_000_000,
                                                       (n1 - n0) / (t1 - t0), (b1 - b0) * 8 / (t1 - t0) / 1e6, cpu * 100))
     print()
 
