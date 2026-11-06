@@ -339,30 +339,36 @@ Converged) ([ipa_base.cpp#L1590-L1619](https://github.com/raspberrypi/libcamera/
 **What the UI does** (`internal/web/static/app.js`):
 - The *Actual values* block shows shutter, analogue and digital gain, frame
   time, AE state, lux and colour temperature.
-- In auto mode it shows a warning when **shutter ≥ 95 % of min(frame time,
-  profile maximum) and analogue × digital gain ≥ 95 % of the profile's maximum
-  gain**. The warning says which limit applies (frame time → lower the frame
-  rate; profile → "long" profile or a lower frame rate) and that EV has no
-  effect.
+- In auto mode, a hint appears when **shutter ≥ 95 % of the frame time**. From
+  then on only gain can brighten the image, up to the last gain step of the
+  profile (`rpi.agc → exposure_modes → <profile> → gain`). If that step is
+  reached, EV has no effect.
+- The UI cannot see the profile's own shutter limit, which can be lower than
+  the frame time at low frame rates. The ⓘ popup says so.
 - Info popups (ⓘ) explain exposure overall, frame rate, shutter, gain, EV,
   metering, profiles and the actual values. The line under the profile select
-  describes the selected profile and whether the frame time caps it.
+  names the tuning parameter and shows the frame-time cap for the current fps.
 
-**Where the profile data comes from.** libcamera's camera API does not expose
-the profiles. The helper reads the tuning file the IPA loads for the sensor
-(`<model>.json`, for example `/usr/share/libcamera/ipa/rpi/vc4/imx477.json`)
-with Picamera2's `load_tuning_file()` / `find_tuning_algo()`
-([picamera2.py#L264-L310](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L264-L310)) and sends the `rpi.agc`
-exposure profiles, metering mode weights, `y_target` and `max_digital_gain` in
-`hello.tuning`. The server forwards them to the browser in a sticky `camera`
-event. If the file cannot be read, the profile details and the limit warning
-are not shown.
+**The UI does not read the tuning file.** The popups explain the behaviour in
+general and name the tuning parameter that sets the actual values (for example
+`rpi.agc → exposure_modes`). The tables in this document are from Raspberry
+Pi's `imx477.json` at the linked commit; the file on a given Pi may differ.
 
-Caveat: if libcamera is pointed at a different tuning file
-(`LIBCAMERA_RPI_TUNING_FILE`), the helper still reads `<model>.json`. Picamera2
-clears that variable by default when it opens the camera
+To see which file libcamera uses, look for libcamera's log line *"Using tuning
+file …"* in the camweb log (helper output is prefixed `[helper]`). libcamera
+picks the file in this order
+([ipa_proxy.cpp#L33-L94](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/ipa_proxy.cpp#L33-L94)):
+1. `LIBCAMERA_RPI_TUNING_FILE`;
+2. `LIBCAMERA_IPA_CONFIG_PATH` dirs + `/rpi/vc4/<sensor>.json`;
+3. the system dirs, usually `/usr/share/libcamera/ipa/rpi/vc4/imx477.json`
+   for the HQ camera on a Pi 4;
+4. `uncalibrated.json` as a fallback.
+
+Picamera2 clears `LIBCAMERA_RPI_TUNING_FILE` when it opens the camera without
+an explicit tuning
 ([picamera2.py#L336-L353](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L336-L353)).
 
+---
 
 ### 3.7 Lux value
 
@@ -471,12 +477,15 @@ so the UI does not offer it.
 - The limits (frame time, profile maximum) are the same in every mode (§3.6).
 
 **In the UI:**
-- The metering ⓘ popup draws the three zone maps from the weights the helper
-  reads from the tuning file (`hello.tuning.metering_modes`), with the selected
-  mode outlined.
+- The metering ⓘ popup draws the 15-zone layout with zone numbers.
+- It names the parameter that holds the weights, in zone order 0–14:
+  `rpi.agc → metering_modes → <mode> → weights`.
+- It names the histogram rules (`rpi.agc → constraint_modes`; the first mode
+  in the file is the default).
 - The zone geometry is fixed in `internal/web/static/app.js`
   (`METERING_ZONES`), taken from the tuning guide figure.
 
+---
 
 ### 3.9 Image processing: brightness, contrast, saturation, sharpness, denoise
 
@@ -555,8 +564,10 @@ How the denoise blocks are driven:
   off / fast / high quality at high gain on the Pi.
 
 **In the UI:**
-- Each control has an ⓘ popup with the above in short form, and the Image
-  section has an overview popup.
+- Each control has an ⓘ popup with the above in short form, naming the tuning
+  parameters (`rpi.contrast → gamma_curve, ce_enable, …`, `rpi.ccm → ccms`,
+  `rpi.sharpen → threshold, strength, limit`, `rpi.sdn → deviation, strength`).
+- The Image section has an overview popup.
 - A line under the denoise select says what the selected mode switches on.
 
 
@@ -631,14 +642,12 @@ calibration lens, influence auto white balance. The CT curve is calibrated from
 **In the UI:**
 - ⓘ popups explain white balance overall (also linked from *Colour temp.* in
   Actual values), the modes, and the manual gains.
-- The modes popup shows each mode's range from the tuning file. A line under
-  the mode select shows the selected range.
-- The gains popup lists the red/blue gains that neutralise common light
-  sources (2700–7500 K), computed from the camera's calibration curve
-  (gain = sensitivity / r or b). This helps to set manual gains for a known
-  light. *Lock current* copies the current auto gains.
-- The helper sends the AWB data in `hello.tuning.awb` (modes, `ct_curve`,
-  sensitivities).
+- Each popup names the `rpi.awb` parameters involved: `modes → lo/hi`,
+  `ct_curve`, `priors`, `sensitivity_r/b`, `transverse_pos/neg`, `speed`,
+  `frame_period`, `min_pixels`, `min_G`.
+- The line under the mode select names `rpi.awb → modes → <mode>`.
+- The gains popup gives the rule for calibrated gains (sensitivity / r or b
+  from `ct_curve`). *Lock current* copies the current auto gains.
 
 ---
 
@@ -874,7 +883,7 @@ taken from the client.
   its limits (§3.6), and **Lock current**.
 - The raw **Focus** value (`FocusFoM`, §3.5).
 - ⓘ info popups for focus, exposure, frame rate, shutter, gain, EV, metering,
-  profiles, actual values, lux (§3.7), metering with zone maps (§3.8), the
+  profiles, actual values, lux (§3.7), metering with the zone layout (§3.8), the
   image controls including denoise (§3.9) and white balance (§3.10). EV, metering and profile are disabled in manual
   mode.
 - **Capture** button: a snapshot without interrupting the stream; the

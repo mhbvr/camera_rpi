@@ -164,33 +164,36 @@
     <button id="reset">Reset to defaults</button>
   </aside>
 </main>
-<!-- Info popups (HTML popover API). Values in [data-fill] are filled from the
-     camera's tuning data by app.js. Background: docs/DESIGN.md §3.6. -->
+<!-- Info popups (HTML popover API). They explain behaviour in general and name
+     the parameter in the camera's libcamera tuning file that sets the actual
+     values (e.g. rpi.agc → exposure_modes). Background: docs/DESIGN.md §3.5-§3.10. -->
 <div id="info-exposure" popover class="popover">
   <h3>How exposure works</h3>
-  <p><b>Auto:</b> each frame, the auto-exposure algorithm measures brightness,
-    multiplies its brightness target by 2<sup>EV</sup>, and computes the total
-    exposure (shutter × gain) needed. It raises the <b>shutter first, then the
-    gain</b>, step by step along the selected <i>exposure profile</i>. Two limits
-    cap it: the <b>frame time</b> (1/fps) caps the shutter, and the profile's last
-    step caps both. Past the analogue limit, digital gain makes up the
-    rest.</p>
+  <p><b>Auto:</b> each frame, the auto-exposure algorithm (<code>rpi.agc</code>)
+    measures brightness, multiplies its brightness target by 2<sup>EV</sup>, and
+    computes the total exposure (shutter × gain) needed. It raises the
+    <b>shutter first, then the gain</b>, step by step along the selected
+    <i>exposure profile</i>. Two limits cap it: the <b>frame time</b> (1/fps)
+    caps the shutter, and the profile's last step caps shutter and gain. Past
+    the sensor's analogue limit, digital gain makes up the rest.</p>
   <p><b>Manual:</b> shutter and gain are used as set; EV, metering and profile
     have no effect. A shutter longer than the frame time lowers the frame rate.</p>
-  <p>When auto exposure reaches its limits, a warning appears under
-    <i>Actual values</i>.</p>
-  <p class="muted">Details: docs/DESIGN.md §3.6</p>
+  <p class="muted">Parameter names in these popups refer to the camera's
+    libcamera tuning file. For the HQ camera on a Pi 4 that is usually
+    <code>/usr/share/libcamera/ipa/rpi/vc4/imx477.json</code>; libcamera logs the
+    path as "Using tuning file" (see the camweb log). Details: docs/DESIGN.md §3.6</p>
   <button type="button" popovertarget="info-exposure" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-fps" popover class="popover">
   <h3>Frame rate</h3>
-  <p>The frame time (1/fps) is also the <b>longest possible shutter</b>: at 30 fps
-    the shutter cannot exceed about 33 ms, in auto or manual mode.</p>
+  <p>The frame time (1/fps) is also the <b>longest possible shutter</b>, in auto
+    and manual mode: at 30 fps the shutter cannot exceed about 33 ms.</p>
   <ul>
-    <li><b>Auto, dark scene:</b> a lower frame rate lets auto exposure use a longer
-      shutter (up to the profile maximum) before raising the gain.</li>
-    <li><b>Manual:</b> a shutter longer than the frame time lowers the frame rate
-      to fit.</li>
+    <li><b>Auto, dark scene:</b> a lower frame rate lets auto exposure use a
+      longer shutter (up to the profile's last shutter step) before raising the
+      gain.</li>
+    <li><b>Manual:</b> a shutter longer than the frame time lowers the frame
+      rate to fit.</li>
     <li>Changing the frame rate restarts the encoder (brief interruption).</li>
   </ul>
   <button type="button" popovertarget="info-fps" popovertargetaction="hide">Close</button>
@@ -199,15 +202,16 @@
   <h3>Shutter (manual)</h3>
   <p>Exposure time per frame, shown as 1/x s. It is used only when auto exposure
     is off. A shutter longer than the frame time (1/fps) lowers the frame rate
-    to fit; the encoder restarts. Longer shutter = brighter, but more motion
-    blur.</p>
+    to fit, and the encoder restarts. A longer shutter gives a brighter image
+    but more motion blur.</p>
   <button type="button" popovertarget="info-shutter" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-gain" popover class="popover">
   <h3>Gain (manual)</h3>
   <p>Sensor amplification (analogue gain; 1 = base sensitivity). It is used only
-    when auto exposure is off. Higher gain = brighter, but noisier. The sensor
-    maximum is <b data-fill="sensor-max-gain">≈22</b>.</p>
+    when auto exposure is off. Higher gain gives a brighter but noisier image.
+    The sensor maximum, from libcamera's <code>AnalogueGain</code> control range,
+    is <b data-fill="sensor-max-gain">reported by the camera</b>.</p>
   <button type="button" popovertarget="info-gain" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-ev" popover class="popover">
@@ -215,46 +219,50 @@
   <p>Multiplies the brightness target of auto exposure by 2<sup>EV</sup> (+1 =
     twice as bright, −1 = half). It is <b>disabled in manual mode</b>.</p>
   <ul>
-    <li>The target is capped at 90 % of full scale, so values above about
-      <b data-fill="ev-cap">+2.4</b> have no further effect.</li>
-    <li>When auto exposure is at its limits (dark scene: shutter at the frame time,
-      gain at the profile maximum), EV has <b>no effect</b>: the target is
-      already out of reach. A warning under <i>Actual values</i> shows this.</li>
+    <li>The base target is <code>rpi.agc → y_target</code> (by lux), scaled by
+      <code>rpi.agc → base_ev</code>. libcamera caps the result at 90 % of full
+      scale, so EV above about log<sub>2</sub>(0.9 / y_target) has no further
+      effect.</li>
+    <li>When auto exposure is at its limits (dark scene: shutter at the frame
+      time, gain at the profile's last step), EV has <b>no effect</b>: the
+      target is already out of reach.</li>
   </ul>
   <button type="button" popovertarget="info-ev" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-metering" popover class="popover">
   <h3>Metering (auto only)</h3>
   <p>Decides <b>which parts of the image</b> auto exposure looks at when it judges
-    brightness. The Pi 4 splits the frame into 15 zones. Auto exposure averages
-    their brightness, each pixel counted with its zone's <b>weight</b>, and steers
-    that average to its target. Weight 0 means the zone is ignored.</p>
-  <div data-fill="metering-zones">Zone weights not available (no tuning data from the camera).</div>
-  <ul>
-    <li><b>centre</b> (centre-weighted): the middle counts most, edges less,
-      corners not at all. Good default.</li>
-    <li><b>spot</b>: only a small area in the middle. Use it when the subject is
-      small and centred against a much brighter or darker background.</li>
-    <li><b>matrix</b>: the whole frame evenly (plain average).</li>
-  </ul>
-  <p>A bright window or dark corner in a zone with weight 0 does not change the
-    exposure. Independently of metering, a histogram rule raises exposure if
-    even the brightest 2 % of pixels are dim. In manual mode metering has no
-    effect.</p>
-  <p class="muted">Zone layout from the Raspberry Pi tuning guide (Figure 9, sizes
-    approximate); weights read from the camera tuning file. Details:
-    docs/DESIGN.md §3.8</p>
+    brightness. The Pi 4 splits the frame into 15 zones (numbered below).
+    Auto exposure averages the brightness, each pixel counted with its zone's
+    <b>weight</b>, and steers that average to its target. Weight 0 means the
+    zone is ignored.</p>
+  <div data-fill="metering-zones"></div>
+  <p>Each mode is a list of 15 weights in zone order 0–14:
+    <code>rpi.agc → metering_modes → centre-weighted / spot / matrix → weights</code>.
+    As the names say: <b>centre</b> favours the middle, <b>spot</b> a small
+    central area, <b>matrix</b> the whole frame.</p>
+  <p>Independently of metering, histogram rules
+    (<code>rpi.agc → constraint_modes</code>; the first mode in the file is used)
+    can raise or lower exposure, for example to keep some pixels bright. In
+    manual mode metering has no effect.</p>
+  <p class="muted">Zone layout from the Raspberry Pi tuning guide, Figure 9 (sizes
+    approximate). Details: docs/DESIGN.md §3.8</p>
   <button type="button" popovertarget="info-metering" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-profile" popover class="popover">
   <h3>Exposure profiles (auto only)</h3>
-  <p>A profile is a list of steps. To brighten the image, auto exposure raises the
-    shutter to the next step, then the gain to the next step, and so on. The last
-    step is the maximum. The shutter is also capped by the frame time.</p>
-  <div data-fill="profile-table">Profile data not available (no tuning data from the camera).</div>
-  <p class="muted">Read at startup from the camera's tuning file
-    <span data-fill="tuning-file"></span>. libcamera's camera API does not expose
-    these profiles.</p>
+  <p>A profile is a list of steps: shutter times (µs) and gains, in
+    <code>rpi.agc → exposure_modes → normal / short / long → shutter, gain</code>.
+    To brighten the image, auto exposure raises the shutter to the next step,
+    then the gain to the next step, and so on. The last step is the maximum.
+    The shutter is also capped by the frame time.</p>
+  <ul>
+    <li><b>short</b> reaches higher gain sooner (less motion blur, more
+      noise).</li>
+    <li><b>long</b> usually allows the longest shutter, which only helps if the
+      frame rate is low enough.</li>
+  </ul>
+  <p class="muted">Details: docs/DESIGN.md §3.6</p>
   <button type="button" popovertarget="info-profile" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-readout" popover class="popover">
@@ -269,48 +277,50 @@
       Converged only means the values stopped changing; it is also reported
       when auto exposure is stuck at its limits.</li>
   </ul>
-  <p><b>At the limit</b> means shutter ≈ min(frame time, profile maximum) and gain
-    ≈ profile maximum. Then the image cannot get brighter in auto mode: lower
-    the frame rate, use the "long" profile with a low enough frame rate, or
-    switch to manual.</p>
-  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L763-L786" target="_blank" rel="noopener">limit logic</a> ·
-    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L527-L564" target="_blank" rel="noopener">"converged" logic</a></p>
+  <p>A hint appears when the shutter has reached the frame time: from then on
+    only gain can brighten the image, up to the last gain step of the profile
+    (<code>rpi.agc → exposure_modes</code>). The profile's own shutter limit can
+    be lower than the frame time at low frame rates; the UI cannot see that.</p>
   <button type="button" popovertarget="info-readout" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-lux" popover class="popover">
   <h3>Lux</h3>
-  <p>An <b>estimate of scene brightness</b> worked out by libcamera from the
-    picture. The camera has no light sensor. It compares the current frame with
-    a reference frame recorded during calibration:</p>
-  <p><code>lux = 830 × (27.2 ms / shutter) × (1 / gain) × (brightness / reference brightness)</code></p>
+  <p>An <b>estimate of scene brightness</b> worked out by libcamera
+    (<code>rpi.lux</code>) from the picture. The camera has no light sensor. It
+    compares the current frame with a reference frame from calibration:</p>
+  <p><code>lux = reference_lux × (reference_shutter_speed / shutter) ×
+    (reference_gain / gain) × (Y / reference_Y)</code></p>
+  <p>The reference values are <code>rpi.lux → reference_*</code> in the tuning
+    file. Y is the average brightness of the whole frame.</p>
   <ul>
     <li><b>Relative, not absolute:</b> the formula assumes the lens and aperture
       used for calibration. On your lens, closing the aperture one stop halves
-      the value; an ND filter lowers it too.</li>
-    <li><b>Reflected light:</b> it uses the average brightness of the whole
-      frame, so a white wall reads higher than dark cloth under the same
-      light.</li>
-    <li>Less reliable with clipped highlights or a very dark, noisy image.</li>
-    <li>libcamera also uses it: auto exposure picks its brightness target, and
-      auto white balance its colour priors, by lux.</li>
+      the value.</li>
+    <li><b>Reflected light:</b> a white wall reads higher than dark cloth under
+      the same light.</li>
+    <li>libcamera also uses it: auto exposure's target (<code>rpi.agc →
+      y_target</code>) and auto white balance's priors (<code>rpi.awb →
+      priors</code>) depend on lux.</li>
   </ul>
-  <p class="muted">Details: docs/DESIGN.md §3.7 ·
-    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L84-L105" target="_blank" rel="noopener">how it is computed</a></p>
+  <p class="muted">Details: docs/DESIGN.md §3.7</p>
   <button type="button" popovertarget="info-lux" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-image" popover class="popover">
   <h3>Image processing</h3>
   <p>These settings change how the image processor renders the picture:</p>
   <ul>
-    <li><b>Brightness and contrast</b> reshape the tone curve (gamma).</li>
-    <li><b>Saturation</b> scales colour in the colour-correction matrix.</li>
-    <li><b>Sharpness</b> and <b>denoise</b> set the strength of the sharpening and
-      noise-reduction blocks.</li>
+    <li><b>Brightness and contrast</b> reshape the tone curve
+      (<code>rpi.contrast</code>).</li>
+    <li><b>Saturation</b> scales colour in the colour-correction matrix
+      (<code>rpi.ccm</code>).</li>
+    <li><b>Sharpness</b> and <b>denoise</b> set the strength of the sharpening
+      (<code>rpi.sharpen</code>) and noise-reduction (<code>rpi.sdn</code>)
+      blocks.</li>
   </ul>
-  <p>They apply live, to both the stream and snapshots, and work in auto and
-    manual exposure. They <b>do not change exposure</b>: no extra light reaches
-    the sensor and no hidden detail is recovered. For a brighter exposure use
-    EV, shutter or gain.</p>
+  <p>They apply live, to the stream and snapshots, in auto and manual exposure.
+    They <b>do not change exposure</b>: no extra light reaches the sensor and no
+    hidden detail is recovered. For a brighter exposure use EV, shutter or
+    gain.</p>
   <p class="muted">Details: docs/DESIGN.md §3.9</p>
   <button type="button" popovertarget="info-image" popovertargetaction="hide">Close</button>
 </div>
@@ -319,12 +329,13 @@
   <p>Shifts the output levels up or down after the tone curve: every value moves
     by <code>brightness × full scale</code> (−1 … +1, default 0).</p>
   <ul>
-    <li>+0.2 lifts blacks to grey (washed out); −0.2 crushes shadows to black.
-      Values are clipped at black and white.</li>
-    <li>This is not exposure: the sensor gets no extra light and dark detail is
-      not recovered. To brighten a dark scene use EV, shutter or gain.</li>
+    <li>Positive values lift blacks towards grey (washed out); negative values
+      crush shadows. Values are clipped at black and white.</li>
+    <li>This is not exposure: no dark detail is recovered. To brighten a dark
+      scene use EV, shutter or gain.</li>
   </ul>
-  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L143-L156" target="_blank" rel="noopener">how it is applied</a> · docs/DESIGN.md §3.9</p>
+  <p class="muted">Applied by <code>rpi.contrast</code> on top of
+    <code>rpi.contrast → gamma_curve</code>. Details: docs/DESIGN.md §3.9</p>
   <button type="button" popovertarget="info-brightness" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-contrast" popover class="popover">
@@ -332,43 +343,47 @@
   <p>Scales the tone curve around mid-grey: <code>(value − 50 %) × contrast + 50 %</code>
     (default 1).</p>
   <ul>
-    <li>&gt; 1: darker darks and brighter brights, with more clipping at both ends.</li>
+    <li>&gt; 1: darker darks and brighter brights, with more clipping at both
+      ends.</li>
     <li>&lt; 1: flatter image; 0 is uniform grey.</li>
-    <li>Independently, an automatic <b>contrast enhancement</b> is always on (HQ
-      tuning): it pulls the darkest 1 % of pixels down and the brightest 5 % up,
-      by a limited amount, keeping the median where it is.</li>
+    <li>Separately, libcamera can apply an automatic <b>contrast
+      enhancement</b> that stretches the darkest and brightest parts of the
+      histogram while keeping the median. It is switched by
+      <code>rpi.contrast → ce_enable</code> and tuned by <code>lo_histogram,
+      lo_level, lo_max, hi_histogram, hi_level, hi_max</code>. The UI cannot
+      change it.</li>
   </ul>
-  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L143-L156" target="_blank" rel="noopener">manual contrast</a> ·
-    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L99-L141" target="_blank" rel="noopener">automatic enhancement</a> · docs/DESIGN.md §3.9</p>
+  <p class="muted">Base curve: <code>rpi.contrast → gamma_curve</code>. Details: docs/DESIGN.md §3.9</p>
   <button type="button" popovertarget="info-contrast" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-saturation" popover class="popover">
   <h3>Saturation</h3>
-  <p>Scales colour intensity: the colour-correction matrix is converted to
-    luma/chroma, the chroma is multiplied by the saturation, and the result is
-    converted back (default 1).</p>
+  <p>Scales colour intensity (chroma) inside the colour-correction matrix;
+    brightness is unchanged (default 1).</p>
   <ul>
-    <li>0 = black and white; 1 = as tuned; 2 = twice the colour intensity.</li>
-    <li>Brightness (luma) is unchanged. Very high values posterise strong
-      colours.</li>
+    <li>0 = black and white; 1 = as calibrated; 2 = twice the colour
+      intensity.</li>
+    <li>The matrix itself is chosen by colour temperature from
+      <code>rpi.ccm → ccms</code>. An optional <code>rpi.ccm → saturation</code>
+      curve can also vary saturation with lux.</li>
   </ul>
-  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/ccm.cpp#L130-L145" target="_blank" rel="noopener">how it is applied</a> · docs/DESIGN.md §3.9</p>
+  <p class="muted">Details: docs/DESIGN.md §3.9</p>
   <button type="button" popovertarget="info-saturation" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-sharpness" popover class="popover">
   <h3>Sharpness</h3>
   <p>Strength of the image processor's sharpening filter (default 1, 0 = off).
-    For a setting <i>s</i>, the sharpening gain is multiplied by <i>s</i>, its limit by
-    √<i>s</i>, and its threshold divided by √<i>s</i>, so higher values also sharpen
-    finer, lower-contrast detail.</p>
+    For a setting <i>s</i>, the filter's strength is multiplied by <i>s</i>, its
+    limit by √<i>s</i>, and its threshold divided by √<i>s</i>, so higher values
+    also sharpen finer, lower-contrast detail.</p>
   <ul>
-    <li>Base values from the HQ tuning: threshold 0.75, strength 1.0, limit 0.5.</li>
-    <li>In this app's 2×2-binned sensor mode, libcamera halves strength and limit
-      and doubles the threshold.</li>
-    <li>Too much sharpening exaggerates noise and edge halos, and costs bitrate.
-      For focusing, the focus value is not affected by this setting.</li>
+    <li>The base values are <code>rpi.sharpen → threshold, strength, limit</code>.</li>
+    <li>In binned sensor modes (this app uses a 2×2-binned mode) libcamera tones
+      the sharpening down.</li>
+    <li>Too much sharpening exaggerates noise and edge halos, and costs
+      bitrate. It does not affect the focus value.</li>
   </ul>
-  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/sharpen.cpp#L52-L84" target="_blank" rel="noopener">how it is applied</a> · docs/DESIGN.md §3.9</p>
+  <p class="muted">Details: docs/DESIGN.md §3.9</p>
   <button type="button" popovertarget="info-sharpness" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-denoise" popover class="popover">
@@ -376,7 +391,9 @@
   <p>The Pi 4 image processor has two noise filters:</p>
   <ul>
     <li><b>Spatial denoise</b> on the raw sensor data. Its strength follows the
-      sensor's noise model, so it automatically gets stronger at higher gain.</li>
+      sensor noise model (<code>rpi.noise</code>), so it gets stronger
+      automatically at higher gain. It is tuned by <code>rpi.sdn → deviation,
+      strength</code>.</li>
     <li><b>Colour denoise</b> removes coloured blotches, in a <i>fast</i> or a
       <i>high quality</i> version.</li>
   </ul>
@@ -388,65 +405,64 @@
     <tr><td>high quality</td><td>on</td><td>high quality</td></tr>
   </table>
   <ul>
-    <li><b>auto</b> is Picamera2's default for video, which is <i>fast</i>.</li>
-    <li>More denoise means a cleaner but softer image; in low light it also
-      saves bitrate. <i>High quality</i> costs more image-processor time.</li>
-    <li>The fast colour denoise works with the processor's second output, which
-      this app also uses for the stream. libcamera expects that output at a
-      quarter of the main size; its effect at our stream size is not
-      documented. Compare the settings at high gain to see.</li>
+    <li><b>auto</b> sends <i>fast</i>, the same as Picamera2's video default.</li>
+    <li>More denoise gives a cleaner but softer image; in low light it also
+      saves bitrate. <i>High quality</i> costs more processing time.</li>
+    <li>Fast colour denoise works with the processor's second output, which this
+      app also uses for the stream. Its effect at our stream size is not
+      documented. Compare the settings at high gain.</li>
   </ul>
-  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L293-L325" target="_blank" rel="noopener">mode mapping</a> ·
-    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L454-L490" target="_blank" rel="noopener">ISP setup</a> · docs/DESIGN.md §3.9</p>
+  <p class="muted">Mode mapping is in libcamera's Pi 4 code (vc4.cpp). Details: docs/DESIGN.md §3.9</p>
   <button type="button" popovertarget="info-denoise" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-wb" popover class="popover">
   <h3>White balance</h3>
   <p>Makes neutral (grey/white) objects look neutral under different light. It
     multiplies the red and blue channels by <b>colour gains</b> (green stays at
-    1). The colour-correction matrix and saturation are then chosen for the
-    resulting colour temperature.</p>
-  <p><b>Auto</b> (libcamera <code>rpi.awb</code>, Bayesian search):</p>
+    1). The colour-correction matrix (<code>rpi.ccm</code>) is then chosen for
+    the resulting colour temperature.</p>
+  <p><b>Auto</b> (<code>rpi.awb</code>, Bayesian search):</p>
   <ul>
     <li>The image is split into 16 × 12 zones; zones that are too dark or have
-      too few pixels are ignored.</li>
-    <li>For colour temperatures across the selected <i>mode's</i> range, it checks
-      how grey the zones would become with the gains calibrated for that
-      temperature, and adds a <b>prior</b>: how likely that light is at the
-      current <i>lux</i> level (dim → warm indoor light, bright → daylight).</li>
-    <li>It then refines slightly off the calibrated curve to allow green/magenta
-      tints, and moves towards the result smoothly over a few seconds.</li>
+      too few pixels are ignored (<code>min_G</code>, <code>min_pixels</code>).</li>
+    <li>For colour temperatures in the selected mode's range, it checks how grey
+      the zones would become with the gains calibrated for that temperature
+      (<code>ct_curve</code>). It weighs that against how likely each light is at
+      the current lux level (<code>priors</code>).</li>
+    <li>It refines slightly off the calibrated curve for green/magenta tints
+      (<code>transverse_pos</code>, <code>transverse_neg</code>), and moves to
+      the result smoothly (<code>speed</code>, <code>frame_period</code>).</li>
   </ul>
   <p><b>Manual:</b> the red and blue gains are used as set; the colour
     temperature is estimated back from them.</p>
-  <p><i>Colour temp.</i> in Actual values is the temperature libcamera is
-    using now. A large uniform coloured area (a red wall) can fool auto white
-    balance; then use a fixed mode, or <i>Lock current</i> while a neutral
-    scene is in view.</p>
-  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb_bayes.cpp#L241-L285" target="_blank" rel="noopener">search</a> ·
-    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L45-L76" target="_blank" rel="noopener">priors</a> · docs/DESIGN.md §3.10</p>
+  <p><i>Colour temp.</i> in Actual values is the temperature libcamera is using
+    now. A large uniform coloured area (a red wall) can fool auto white
+    balance; then use a fixed mode, or <i>Lock current</i> while a neutral scene
+    is in view.</p>
+  <p class="muted">Parameters: <code>rpi.awb → …</code> in the tuning file. Details: docs/DESIGN.md §3.10</p>
   <button type="button" popovertarget="info-wb" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-awb-mode" popover class="popover">
   <h3>White balance modes (auto only)</h3>
   <p>A mode limits the <b>range of colour temperatures</b> auto white balance may
-    choose. A narrow range (e.g. <i>daylight</i>) keeps colours stable when the
-    scene content would otherwise mislead it.</p>
-  <div data-fill="awb-modes">Mode ranges not available (no tuning data from the camera).</div>
-  <p class="muted">Read at startup from the camera's tuning file. Details: docs/DESIGN.md §3.10</p>
+    choose: <code>rpi.awb → modes → &lt;mode&gt; → lo, hi</code> (kelvin). A
+    narrow range (e.g. <i>daylight</i>) keeps colours stable when the scene
+    content would otherwise mislead it. <i>auto</i> is the widest range.</p>
+  <p class="muted">Details: docs/DESIGN.md §3.10</p>
   <button type="button" popovertarget="info-awb-mode" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-wb-gains" popover class="popover">
   <h3>Manual colour gains</h3>
   <p>Used when auto white balance is off. Each value multiplies its channel
     relative to green (1.0). Raise <b>red</b> if the image is too blue/cyan, and
-    raise <b>blue</b> if it is too yellow/orange.</p>
-  <p>Gains that make a grey object neutral for a given light, from the
-    camera's calibration:</p>
-  <div data-fill="awb-gain-table">Calibration data not available (no tuning data from the camera).</div>
+    raise <b>blue</b> if it is too yellow/orange. Warm light (bulbs) needs
+    a lower red and a higher blue gain than daylight.</p>
+  <p>The calibrated gains for a light of temperature T are
+    <code>sensitivity_r / r(T)</code> and <code>sensitivity_b / b(T)</code>,
+    from <code>rpi.awb → ct_curve</code> (rows of T, r, b).</p>
   <p>The easiest way to set them: point at a neutral scene in auto mode, then
     press <i>Lock current</i>.</p>
-  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L209-L230" target="_blank" rel="noopener">how manual gains are applied</a> · docs/DESIGN.md §3.10</p>
+  <p class="muted">Details: docs/DESIGN.md §3.10</p>
   <button type="button" popovertarget="info-wb-gains" popovertargetaction="hide">Close</button>
 </div>
 <div id="toast" class="toast" hidden></div>

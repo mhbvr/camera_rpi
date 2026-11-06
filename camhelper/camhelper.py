@@ -249,7 +249,6 @@ class Camera:
                 info["values"] = vals
             controls[name] = info
         props = self.picam2.camera_properties
-        tuning = read_tuning(props.get("Model", ""))
         try:
             lc_version = __import__("libcamera").__version__
         except Exception:  # noqa: BLE001
@@ -267,7 +266,6 @@ class Camera:
                 "controls": controls,
             },
             "features": ["snapshot", "metadata", "set_encoder"],
-            "tuning": tuning,
         }
 
     def state(self, state, detail=None):
@@ -541,56 +539,6 @@ def _stream_info(s):
         if k in s and s[k] is not None:
             out["size" if k == "output_size" else k] = s[k] if not isinstance(s[k], tuple) else list(s[k])
     return out
-
-
-def read_tuning(model):
-    """Exposure-related data from the tuning file libcamera loads for this
-    sensor (<model>.json in the standard IPA data directories), read with
-    Picamera2.load_tuning_file(). libcamera's camera API does not expose the
-    auto-exposure profiles, so the tuning file is the only source. Returns
-    None if the file cannot be read."""
-    if not model:
-        return None
-    try:
-        from picamera2 import Picamera2
-        name = model + ".json"
-        tuning = Picamera2.load_tuning_file(name)
-        agc = Picamera2.find_tuning_algo(tuning, "rpi.agc")
-    except Exception as e:  # noqa: BLE001
-        log.warning("cannot read tuning file for %s: %s", model, e)
-        return None
-    ch = agc["channels"][0] if isinstance(agc.get("channels"), list) and agc["channels"] else agc
-    modes = {}
-    for k, v in (ch.get("exposure_modes") or {}).items():
-        # Older tuning files call it "shutter", newer ones "exposure_time".
-        shutter = v.get("shutter") or v.get("exposure_time") or []
-        modes[k] = {"shutter": list(shutter), "gain": list(v.get("gain") or [])}
-    return {
-        "file": name,
-        "exposure_modes": modes,
-        # name -> per-zone weights (15 zones on Pi 4, see DESIGN.md §3.8)
-        "metering_modes": {k: list((v or {}).get("weights") or [])
-                           for k, v in (ch.get("metering_modes") or {}).items()},
-        "y_target": list(ch.get("y_target") or []),
-        "max_digital_gain": float(ch.get("max_digital_gain", 4.0)),
-        "awb": _awb_tuning(Picamera2, tuning),
-    }
-
-
-def _awb_tuning(Picamera2, tuning):
-    """rpi.awb data for the UI: mode CT ranges, the calibrated CT curve
-    (ct, r, b) and the gain sensitivities (DESIGN.md §3.10)."""
-    try:
-        awb = Picamera2.find_tuning_algo(tuning, "rpi.awb")
-    except Exception:  # noqa: BLE001
-        return None
-    ct = list(awb.get("ct_curve") or [])
-    return {
-        "modes": {k: [v.get("lo"), v.get("hi")] for k, v in (awb.get("modes") or {}).items()},
-        "ct_curve": [ct[i:i + 3] for i in range(0, len(ct) - 2, 3)],
-        "sensitivity_r": float(awb.get("sensitivity_r", 1.0)),
-        "sensitivity_b": float(awb.get("sensitivity_b", 1.0)),
-    }
 
 
 def _enum_values(name):

@@ -138,10 +138,14 @@ The ⓘ button next to it explains the same; details and source links are in
   disabled.
 - **Metering** chooses which of the 15 Pi 4 zones count when auto exposure
   judges brightness: centre-weighted, spot or matrix. The ⓘ popup shows the
-  zone weights.
+  zone layout.
 
-Each control has an ⓘ popup; details with source links are in
-[DESIGN.md §3.6](docs/DESIGN.md).
+Each control has an ⓘ popup. Popups explain the behaviour in general and name
+the parameter in the camera's libcamera tuning file that sets the actual
+values, for example `rpi.agc → exposure_modes`. libcamera logs which file it
+uses ("Using tuning file …", in the camweb log); for the HQ camera on a Pi 4 it
+is usually `/usr/share/libcamera/ipa/rpi/vc4/imx477.json`. Details with source
+links are in [DESIGN.md §3.6](docs/DESIGN.md).
 
 **Image** settings (brightness, contrast, saturation, sharpness, denoise) only
 change how the picture is rendered, not the exposure. Denoise "auto" is
@@ -149,9 +153,8 @@ Picamera2's video default, *fast*: spatial plus fast colour denoise. See
 DESIGN.md §3.9.
 
 **White balance:** auto picks a colour temperature within the selected mode's
-range, guided by the scene and the lux level. Manual uses red/blue gains; the
-gains ⓘ popup lists the right gains for common light sources (DESIGN.md
-§3.10).
+range (`rpi.awb → modes`), guided by the scene and the lux level. Manual uses
+red/blue gains; *Lock current* copies the auto gains (DESIGN.md §3.10).
 
 ## Troubleshooting
 

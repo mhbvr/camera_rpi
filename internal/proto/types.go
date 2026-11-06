@@ -35,36 +35,6 @@ type Hello struct {
 	Libcamera   string     `json:"libcamera"`
 	Camera      CameraInfo `json:"camera"`
 	Features    []string   `json:"features"`
-	Tuning      *Tuning    `json:"tuning,omitempty"` // nil if the tuning file could not be read
-}
-
-// Tuning is the exposure-related part of the libcamera tuning file in use
-// (rpi.agc). libcamera's camera API does not expose it; the helper reads the
-// file the IPA loads for the sensor.
-type Tuning struct {
-	File           string                     `json:"file"`
-	ExposureModes  map[string]ExposureProfile `json:"exposure_modes"`
-	MeteringModes  map[string][]float64       `json:"metering_modes"` // name -> per-zone weights
-	YTarget        []float64                  `json:"y_target"`       // pairs: lux, target brightness (0..1)
-	MaxDigitalGain float64                    `json:"max_digital_gain"`
-	AWB            *AWBTuning                 `json:"awb,omitempty"`
-}
-
-// AWBTuning is the rpi.awb part of the tuning file: the colour-temperature
-// range each AWB mode searches, and the calibrated curve of red/blue
-// (relative to green) against colour temperature.
-type AWBTuning struct {
-	Modes        map[string][2]float64 `json:"modes"`    // name -> [lo, hi] K
-	CTCurve      [][3]float64          `json:"ct_curve"` // [K, r, b]; gain = sensitivity / r (or b)
-	SensitivityR float64               `json:"sensitivity_r"`
-	SensitivityB float64               `json:"sensitivity_b"`
-}
-
-// ExposureProfile lists the shutter (µs) and gain steps auto exposure walks
-// through, in order.
-type ExposureProfile struct {
-	Shutter []float64 `json:"shutter"`
-	Gain    []float64 `json:"gain"`
 }
 
 // CameraInfo describes the camera.

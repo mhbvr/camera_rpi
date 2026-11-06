@@ -164,20 +164,14 @@ func (m *Manager) RunSession(ctx context.Context, sess *helper.Session) error {
 	}
 }
 
-// publishCamera sends a sticky "camera" event with what the UI needs to
-// explain exposure: sensor gain limit and the tuning file's exposure
-// profiles.
+// publishCamera sends a sticky "camera" event with the camera model and the
+// sensor's analogue gain limit (from libcamera's control ranges).
 func (m *Manager) publishCamera(h *proto.Hello) {
 	ev := map[string]any{"event": "camera", "model": h.Camera.Model, "impl": h.Impl, "impl_version": h.ImplVersion}
 	if ci, ok := h.Camera.Controls["AnalogueGain"]; ok {
 		if max, ok := ci.MaxFloat(); ok {
 			ev["sensor_max_gain"] = max
 		}
-	}
-	if h.Tuning != nil {
-		ev["tuning"] = h.Tuning
-	} else {
-		m.opt.Log.Printf("camera: helper sent no tuning data; exposure profile details unavailable")
 	}
 	m.hub.PublishSticky("camera", stream.NewEvent(ev))
 }

@@ -6,7 +6,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 let config = null;
 let lastMeta = null;
 let camLatency = null; // helper: sensor timestamp -> socket write, ms
-let camera = null; // "camera" event: model, sensor_max_gain, tuning (exposure profiles)
+let camera = null; // "camera" event: model, sensor_max_gain
 
 // ---------- helpers ----------
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
@@ -67,11 +67,9 @@ function updateEnabled() {
 
 function render(cfg) {
   config = cfg;
-  fillAwbInfo();
   describeProfile();
   describeDenoise();
   describeAwb();
-  fillCameraInfo();
   $$('[data-path]').forEach((el) => {
     setField(el, getPath(cfg, el.dataset.path));
     updateOutput(el);
@@ -195,109 +193,36 @@ function showMeta(md) {
   if (md.FocusFoM != null) $('#focus-val').textContent = Math.round(md.FocusFoM);
 }
 
-// ---------- exposure explanations (docs/DESIGN.md §3.6) ----------
+// ---------- explanations (docs/DESIGN.md §3.5-§3.10) ----------
+// The UI does not read the camera tuning file. Popups explain the behaviour
+// in general and name the tuning parameter (e.g. rpi.agc → exposure_modes)
+// that sets the actual values for the camera in use.
 const AE_STATES = { 0: 'Idle', 1: 'Searching', 2: 'Converged' }; // libcamera AeState values
 const ms = (us) => (us / 1000).toFixed(1).replace(/\.0$/, '') + ' ms';
 
-function profile(name) {
-  return camera?.tuning?.exposure_modes?.[name] ?? null;
-}
-
-// Fills [data-fill] elements in the popups from the camera event.
 function fillCameraInfo() {
-  const fill = (key, html) => $$(`[data-fill="${key}"]`).forEach((e) => (e.innerHTML = html));
-  if (camera?.sensor_max_gain) fill('sensor-max-gain', camera.sensor_max_gain.toFixed(2));
-  const t = camera?.tuning;
-  if (!t) return;
-  fill('tuning-file', `(<code>${t.file}</code>)`);
-  if (t.metering_modes && !Array.isArray(t.metering_modes)) {
-    const maps = meteringMaps(t.metering_modes, config?.controls?.metering);
-    if (maps) fill('metering-zones', `<div class="zone-maps">${maps}</div><p class="muted">Numbers are zone weights; darker = counts more.</p>`);
-  }
-  const yt = (t.y_target || []).filter((_, i) => i % 2 === 1);
-  if (yt.length) fill('ev-cap', '+' + Math.log2(0.9 / Math.max(...yt)).toFixed(1));
-  const order = ['normal', 'short', 'long'];
-  const names = Object.keys(t.exposure_modes || {}).sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
-  const sel = config?.controls?.exposure_mode;
-  const rows = names.map((name) => {
-    const p = t.exposure_modes[name];
-    return `<tr${name === sel ? ' class="selected"' : ''}><td>${name}</td><td>${p.shutter.map(ms).join(' → ')}</td><td>${p.gain.join(' → ')}</td></tr>`;
-  });
-  fill('profile-table', `<table><tr><th>profile</th><th>shutter steps</th><th>gain steps</th></tr>${rows.join('')}</table>
-    <p>Digital gain can add up to ×${t.max_digital_gain} beyond the sensor's analogue maximum.</p>`);
+  if (camera?.sensor_max_gain) $$('[data-fill="sensor-max-gain"]').forEach((e) => (e.textContent = camera.sensor_max_gain.toFixed(2)));
 }
 
 // Pi 4 AGC metering zones (Raspberry Pi Camera Algorithm and Tuning Guide,
-// §5.9.3, Figure 9) on a 5-row × 7-column grid:
-// [zone, rowStart, rowEnd, colStart, colEnd] (CSS grid lines).
+// §5.9.3, Figure 9) on a 5-row × 7-column grid: [zone, rowStart, rowEnd,
+// colStart, colEnd]. Drawn with zone numbers; the weights per zone are
+// rpi.agc → metering_modes → <mode> → weights in the tuning file.
 const METERING_ZONES = [
   [11, 1, 2, 1, 2], [9, 1, 2, 2, 7], [12, 1, 2, 7, 8],
   [7, 2, 5, 1, 2], [5, 2, 5, 2, 3], [3, 2, 3, 3, 6], [1, 3, 4, 3, 4], [0, 3, 4, 4, 5],
   [2, 3, 4, 5, 6], [4, 4, 5, 3, 6], [6, 2, 5, 6, 7], [8, 2, 5, 7, 8],
   [13, 5, 6, 1, 2], [10, 5, 6, 2, 7], [14, 5, 6, 7, 8],
 ];
-const METERING_NAMES = { centre: 'centre-weighted', spot: 'spot', matrix: 'matrix' }; // UI -> tuning
-
-function meteringMaps(modes, selected) {
-  return Object.entries(METERING_NAMES).map(([ui, name]) => {
-    const w = modes[name];
-    if (!w || w.length !== METERING_ZONES.length) return '';
-    const max = Math.max(...w, 1);
-    const cells = METERING_ZONES.map(([z, r1, r2, c1, c2]) =>
-      `<div style="grid-area:${r1}/${c1}/${r2}/${c2};--w:${(w[z] / max).toFixed(2)}" title="zone ${z}: weight ${w[z]}">${w[z]}</div>`).join('');
-    return `<figure class="zones${ui === selected ? ' selected' : ''}"><div class="zone-grid">${cells}</div><figcaption>${ui}</figcaption></figure>`;
-  }).join('');
+function drawZoneLayout() {
+  const cells = METERING_ZONES.map(([z, r1, r2, c1, c2]) => `<div style="grid-area:${r1}/${c1}/${r2}/${c2}">${z}</div>`).join('');
+  $$('[data-fill="metering-zones"]').forEach((e) => (e.innerHTML = `<div class="zone-grid zone-layout">${cells}</div>`));
 }
-
-// ---------- white balance (docs/DESIGN.md §3.10) ----------
-function awbTuning() {
-  return camera?.tuning?.awb ?? null;
-}
-
-// Interpolates the calibrated CT curve [K, r, b] at temperature k.
-function ctPoint(curve, k) {
-  if (k <= curve[0][0]) return curve[0];
-  for (let i = 1; i < curve.length; i++) {
-    const [k1, r1, b1] = curve[i - 1], [k2, r2, b2] = curve[i];
-    if (k <= k2) {
-      const f = (k - k1) / (k2 - k1);
-      return [k, r1 + f * (r2 - r1), b1 + f * (b2 - b1)];
-    }
-  }
-  return curve.at(-1);
-}
-
-function fillAwbInfo() {
-  const a = awbTuning();
-  if (!a) return;
-  const fill = (key, html) => $$(`[data-fill="${key}"]`).forEach((e) => (e.innerHTML = html));
-  const sel = config?.controls?.awb_mode;
-  const order = ['auto', 'incandescent', 'tungsten', 'fluorescent', 'indoor', 'daylight', 'cloudy'];
-  const names = Object.keys(a.modes || {}).sort((x, y) => (order.indexOf(x) + 1 || 99) - (order.indexOf(y) + 1 || 99));
-  fill('awb-modes', `<table><tr><th>mode</th><th>colour temperature range</th></tr>${names.map((n) =>
-    `<tr${n === sel ? ' class="selected"' : ''}><td>${n}</td><td>${a.modes[n][0]} – ${a.modes[n][1]} K</td></tr>`).join('')}</table>`);
-  const curve = a.ct_curve || [];
-  if (curve.length >= 2) {
-    const rows = [2700, 3200, 4000, 5000, 5600, 6500, 7500].map((k) => {
-      const [, r, b] = ctPoint(curve, k);
-      return `<tr><td>${k} K</td><td>${(a.sensitivity_r / r).toFixed(2)}</td><td>${(a.sensitivity_b / b).toFixed(2)}</td></tr>`;
-    });
-    fill('awb-gain-table', `<table><tr><th>light</th><th>red gain</th><th>blue gain</th></tr>${rows.join('')}</table>
-      <p class="muted">2700 K household bulb · 3200 K halogen · 4000 K cool LED/fluorescent · 5600 K daylight · 6500 K overcast. Calibration range ${curve[0][0]}–${curve.at(-1)[0]} K.</p>`);
-  }
-}
-
-function describeAwb() {
-  const el = $('#awb-desc');
-  if (!el || !config) return;
-  const a = awbTuning();
-  const m = a?.modes?.[config.controls.awb_mode];
-  el.textContent = m ? `${config.controls.awb_mode}: chooses a colour temperature between ${m[0]} and ${m[1]} K.` : '';
-}
+drawZoneLayout();
 
 // Denoise settings -> what the Pi 4 ISP does (libcamera vc4.cpp DenoiseModeTable).
 const DENOISE_DESC = {
-  auto: 'Spatial denoise + fast colour denoise (Picamera2 video default).',
+  auto: 'Spatial denoise + fast colour denoise (same as Picamera2\'s video default).',
   off: 'No noise reduction.',
   minimal: 'Spatial denoise only, no colour denoise.',
   fast: 'Spatial denoise + fast colour denoise.',
@@ -308,52 +233,37 @@ function describeDenoise() {
   if (el && config) el.textContent = DENOISE_DESC[config.controls.denoise] ?? '';
 }
 
-// One-line description of the selected profile under the select.
+// Line under the exposure profile select: where the steps are defined, and
+// the frame-time cap (which does not depend on the tuning file).
 function describeProfile() {
   const el = $('#profile-desc');
   if (!el || !config) return;
   const name = config.controls.exposure_mode;
-  const p = profile(name);
-  if (!p) {
-    el.textContent = camera ? 'Profile details unavailable (no tuning data).' : '';
-    return;
-  }
-  const maxShutter = p.shutter.at(-1);
-  const frame = 1e6 / config.controls.fps;
-  let txt = `${name}: shutter up to ${ms(maxShutter)}, gain up to ${p.gain.at(-1)}.`;
-  if (frame < maxShutter) txt += ` At ${config.controls.fps} fps the shutter is capped at ${ms(frame)} by the frame time.`;
-  el.textContent = txt;
+  el.textContent = `Steps: tuning file rpi.agc → exposure_modes → ${name}. ` +
+    `At ${config.controls.fps} fps the shutter cannot exceed ${ms(1e6 / config.controls.fps)} (frame time).`;
 }
 
-// Warns when auto exposure is at its limits: shutter ≈ min(frame time,
-// profile max) and total gain ≈ profile max gain. Then EV has no effect.
+// Line under the white balance mode select.
+function describeAwb() {
+  const el = $('#awb-desc');
+  if (el && config) el.textContent = `Range: tuning file rpi.awb → modes → ${config.controls.awb_mode} → lo … hi (kelvin).`;
+}
+
+// Auto exposure using the longest shutter the frame time allows: from here
+// only gain can brighten the image, up to the profile's last gain step.
 function checkAeLimit(md) {
   const box = $('#ae-limit');
-  const name = config?.controls?.exposure_mode;
-  const p = profile(name);
-  if (!config?.controls?.auto_exposure || !p || !md.ExposureTime || !md.FrameDuration || md.AeState === 0) {
+  const c = config?.controls;
+  if (!c?.auto_exposure || !md.ExposureTime || !md.FrameDuration || md.AeState === 0 ||
+      md.ExposureTime < 0.95 * md.FrameDuration) {
     box.hidden = true;
     return;
   }
-  const profMax = p.shutter.at(-1);
-  const shutterCap = Math.min(md.FrameDuration, profMax);
-  const gainCap = p.gain.at(-1);
-  const gain = (md.AnalogueGain || 1) * (md.DigitalGain || 1);
-  const atLimit = md.ExposureTime >= 0.95 * shutterCap && gain >= 0.95 * gainCap;
-  box.hidden = !atLimit;
-  if (!atLimit) return;
-  let why;
-  if (md.FrameDuration < profMax) {
-    why = `the shutter is capped by the frame time (${ms(md.FrameDuration)} at ${(1e6 / md.FrameDuration).toFixed(0)} fps). ` +
-      `Lower the frame rate (the "${name}" profile allows up to ${ms(profMax)})`;
-  } else {
-    const long = profile('long');
-    why = `the shutter is at the "${name}" profile maximum (${ms(profMax)}).` +
-      (long && long.shutter.at(-1) > profMax
-        ? ` Use the "long" profile (up to ${ms(long.shutter.at(-1))}, needs ≤ ${Math.floor(1e6 / long.shutter.at(-1))} fps)`
-        : ' Lower the frame rate');
-  }
-  box.textContent = `Auto exposure at its maximum: gain is at the profile limit (${gainCap}) and ${why}, or switch to manual. EV changes have no effect now.`;
+  box.hidden = false;
+  box.textContent = `Shutter at the frame-time limit (${ms(md.FrameDuration)} at ${(1e6 / md.FrameDuration).toFixed(0)} fps); ` +
+    `only gain (now ${(md.AnalogueGain || 0).toFixed(1)}) can brighten the image further. If the gain has reached the last step of ` +
+    `rpi.agc → exposure_modes → ${c.exposure_mode} → gain, the image cannot get brighter in auto mode and EV has no effect: ` +
+    `lower the frame rate or use manual exposure.`;
 }
 
 // ---------- player ----------
@@ -371,9 +281,6 @@ const player = new Player($('#video'), {
     else if (ev.event === 'camera') {
       camera = ev;
       fillCameraInfo();
-      fillAwbInfo();
-      describeAwb();
-      describeProfile();
     }
     else if (ev.event === 'error') toast('Camera error: ' + JSON.stringify(ev.data), true);
   },

@@ -39,38 +39,6 @@ def _split_aus(data):
     return aus
 
 
-_FAKE_TUNING = {
-    "version": 2.0,
-    "target": "bcm2835",
-    "algorithms": [
-        {"rpi.awb": {
-            "modes": {"auto": {"lo": 2500, "hi": 8000}, "incandescent": {"lo": 2500, "hi": 3000},
-                      "tungsten": {"lo": 3000, "hi": 3500}, "fluorescent": {"lo": 4000, "hi": 4700},
-                      "indoor": {"lo": 3000, "hi": 5000}, "daylight": {"lo": 5500, "hi": 6500},
-                      "cloudy": {"lo": 7000, "hi": 8600}},
-            "ct_curve": [2360.0, 0.6009, 0.3093, 2848.0, 0.5071, 0.4, 2903.0, 0.4905, 0.4392,
-                         3628.0, 0.4261, 0.5564, 3643.0, 0.4228, 0.5623, 4660.0, 0.3529, 0.68,
-                         5579.0, 0.3227, 0.7, 6125.0, 0.3129, 0.71, 6671.0, 0.3065, 0.72,
-                         7217.0, 0.3014, 0.73, 7763.0, 0.295, 0.74, 9505.0, 0.2524, 0.7856],
-            "sensitivity_r": 1.05, "sensitivity_b": 1.05,
-        }},
-        {"rpi.agc": {"channels": [{
-            "metering_modes": {
-                "centre-weighted": {"weights": [3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0]},
-                "spot": {"weights": [2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]},
-                "matrix": {"weights": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]},
-            },
-            "exposure_modes": {
-                "normal": {"shutter": [100, 10000, 30000, 60000, 66666], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
-                "short": {"shutter": [100, 5000, 10000, 20000, 66666], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
-                "long": {"shutter": [100, 10000, 30000, 60000, 120000], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
-            },
-            "y_target": [0, 0.16, 1000, 0.165, 10000, 0.17],
-        }]}},
-    ],
-}
-
-
 class _Request:
     def __init__(self, cam, frame):
         self.cam, self.frame = cam, frame
@@ -135,16 +103,6 @@ class Picamera2:
         self._thread = None
         self._frame = 0
         self._cond = threading.Condition()
-
-    @staticmethod
-    def load_tuning_file(tuning_file, dir=None):
-        if tuning_file != "imx477.json":
-            raise RuntimeError("Tuning file not found")
-        return _FAKE_TUNING
-
-    @staticmethod
-    def find_tuning_algo(tuning, name):
-        return next(a for a in tuning["algorithms"] if name in a)[name]
 
     @property
     def sensor_modes(self):

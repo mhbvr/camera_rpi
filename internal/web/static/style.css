@@ -54,14 +54,12 @@ label button.info { margin-left: 2px; vertical-align: middle; }
 .popover table { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
 .popover th, .popover td { border: 1px solid var(--line); padding: 3px 6px; text-align: left; }
 .popover tr.selected td { background: var(--line); font-weight: 600; }
-.zone-maps { display: flex; gap: 10px; flex-wrap: wrap; margin: 8px 0 4px; }
-.zones { margin: 0; text-align: center; font-size: 12px; color: var(--muted); }
-.zones.selected figcaption { color: var(--text); font-weight: 600; }
-.zones.selected .zone-grid { outline: 2px solid var(--accent); }
 .zone-grid { display: grid; grid-template-columns: 7fr 7fr 4fr 4fr 4fr 7fr 7fr; grid-template-rows: repeat(5, 1fr);
   width: 124px; height: 93px; border: 1px solid var(--line); }
 .zone-grid div { display: flex; align-items: center; justify-content: center; font-size: 10px; border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--accent) calc(var(--w) * 70%), transparent); color: var(--text); }
+  color: var(--text); }
+.zone-layout { margin: 8px 0; width: 186px; height: 140px; }
+.zone-layout div { font-size: 12px; }
 button.info { width: 22px; height: 22px; padding: 0; border-radius: 50%; font: italic 600 13px/20px Georgia, serif; }
 .popover { max-width: min(440px, calc(100vw - 32px)); padding: 16px 20px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); color: var(--text); box-shadow: 0 8px 32px rgba(0,0,0,.3); }
