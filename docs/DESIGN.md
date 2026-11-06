@@ -184,7 +184,7 @@ keyframe. The H.264 profile is fixed at `high`. Flips come from startup flags
 | Change | Mechanism | Stream impact |
 |---|---|---|
 | Exposure (auto/manual, shutter, gain, EV, metering, mode), AWB (mode, manual gains), brightness, contrast, saturation, sharpness, noise reduction | `set_controls` (live) | **none**, takes effect after ~10 frames with 6 buffers (M0 0.7) |
-| Bitrate, GOP, **frame rate** (also a manual shutter longer than the frame time) | `set_controls` if needed, then restart the encoder | new IDR, short gap. The frame rate needs an encoder restart because the encoder's rate control must know it (M0 0.9) |
+| Bitrate, GOP, **frame rate** (also a manual shutter longer than the frame time) | `set_controls` if needed, then restart the encoder | new IDR, short gap. The frame rate needs an encoder restart: the Pi encoder assumes 30 fps, so the helper hands it `bitrate × 30 / fps` (M0 0.9) |
 | Stream size | reconfigure inside the helper (stop → configure → start) | short gap, a few hundred ms expected (to measure) |
 | Helper crash | Go restarts the helper | about 1–3 s (process and camera init) |
 
@@ -480,7 +480,7 @@ camera_rpi/
 | Stage | Estimate |
 |---|---|
 | Sensor exposure, readout, ISP (sensor timestamp → request complete) | **40 ms measured** (33 ms exposure, dark scene; less with shorter exposures) |
-| HW H.264 encode | to measure (spike re-run reports sensor → encoder callback) |
+| HW H.264 encode | **~18 ms p50 measured** (sensor → encoder output 53 ms p50, 60 ms mean, 73 ms p95) |
 | Helper hand-off (Python callback, socket write) | socket 0.4 ms measured; snapshot JPEG encoding adds up to ~11 ms jitter (p95) |
 | Go hub and HTTP write | ~1 ms |
 | Network | LAN 1–5 ms; internet RTT/2 plus I-frame serialisation |

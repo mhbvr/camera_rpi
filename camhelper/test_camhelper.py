@@ -82,6 +82,12 @@ class FramingTest(unittest.TestCase):
         self.assertEqual(hdr[4], 1)
         self.assertEqual(hdr[5], 3)
 
+    def test_encoder_bitrate(self):
+        self.assertEqual(camhelper.encoder_bitrate(6_000_000, 30), 6_000_000)
+        self.assertEqual(camhelper.encoder_bitrate(6_000_000, 40), 4_500_000)
+        self.assertEqual(camhelper.encoder_bitrate(6_000_000, 15), 12_000_000)
+        self.assertEqual(camhelper.encoder_bitrate(20_000_000, 10), camhelper.MAX_ENCODER_BITRATE)
+
     def test_has_sps(self):
         self.assertTrue(camhelper.has_sps(b"\x00\x00\x00\x01\x67\x64\x00\x28\x00\x00\x01\x68"))
         self.assertFalse(camhelper.has_sps(b"\x00\x00\x00\x01\x65\x88\x84"))
