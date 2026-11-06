@@ -1,14 +1,14 @@
-# camera_rpi — Design Document (v0.3, for review)
+# camera_rpi — Design Document (v0.4, for review)
 
 A web application for a Raspberry Pi 4 with the HQ Camera (Sony IMX477):
 
 1. a **low-latency live stream** in the browser, usable on the LAN and over the
    internet at HQ (1080p) with reasonable bandwidth;
 2. **camera settings** (exposure, gain, white balance, image tuning, frame
-   rate, resolution, zoom, bitrate…), applied **live** where the hardware
+   rate, stream resolution, bitrate…), applied **live** where the hardware
    allows it;
 3. **still capture without stopping the stream**: a JPEG snapshot from the
-   camera's higher-resolution `main` stream (~3 MP with the default profile),
+   camera's higher-resolution `main` stream (2028×1520, 3.1 MP),
    downloaded straight to the browser.
 
 It is a prototype: keep it simple, keep dependencies few, and make the camera
@@ -17,7 +17,9 @@ part replaceable (the Python helper is expected to become C++ later).
 **Out of scope at this stage** (the design keeps them possible, see
 PROTOCOL §6): TLS/HTTPS in the app, authentication, gallery and file
 management, full-resolution 12 MP capture (mode switch), DNG raw, recording to
-file, MJPEG fallback, WebRTC, image processing.
+file, MJPEG fallback, WebRTC, image processing, 16:9 and high-fps sensor
+modes, digital zoom, H.264 profile selection, flips in the UI, presets, status
+and capabilities endpoints, latency estimation in the browser.
 
 Related documents:
 - [`PROTOCOL.md`](PROTOCOL.md) — the IPC contract between the Go server and
@@ -33,6 +35,11 @@ Related documents:
 - Stills: only a **snapshot without interrupting the stream** (main stream,
   ~3 MP). Full-res capture, TLS, auth and the gallery were dropped in the
   v0.3 review.
+- v0.4 review: a single 4:3 sensor mode, no zoom, fixed H.264 profile, flips
+  only as startup flags, no helper-side video queue, no ping, one config
+  endpoint, no capabilities/status/time endpoints, no presets, and a simpler
+  browser player (no latency estimate, no client-side frame skipping, no
+  pausing in hidden tabs, fixed-interval reconnect).
 - The H.264 splitter and its extra one-frame delay are gone. The encoder
   hands over whole frames.
 - IPC between Go and the helper uses **Unix domain sockets** (§4).
@@ -111,7 +118,7 @@ Related documents:
 └────────────────────────────────────────────────────────────────────┼────────────────┘
                                                                      │ HTTPS
                        Browser: fetch('/stream') → parser → VideoDecoder (WebCodecs) → <canvas>
-                                REST: /api/config, /api/controls, /api/capture
+                                REST: /api/config, /api/capture
 ```
 
 ### Division of responsibility (central for the later C++ rewrite)
@@ -130,19 +137,21 @@ Related documents:
 
 ## 3. Camera pipeline (inside the helper)
 
-### 3.1 Stream profiles
-Because of the rules in §1 (one sensor mode; lores ≤ main with the same aspect
-ratio; H.264 ≤ 1080p), Go exposes **profiles** instead of free-form sizes:
+### 3.1 Sensor mode and stream sizes
+The prototype uses **one sensor mode: 2028×1520 12-bit (2×2 binned, full field
+of view, up to 40 fps)**. Because of the rules in §1 (lores ≤ main with the same
+aspect ratio, H.264 ≤ 1080p), the sizes are fixed except for the stream size:
 
-| Profile | Sensor mode | main (snapshot source) | lores → H.264 (choices) | fps |
-|---|---|---|---|---|
-| `4:3` (default) | 2028×1520 | 2028×1520 (3.1 MP) | 1440×1080, 1024×768, 640×480 | 1–40 |
-| `16:9` | 2028×1080 | 1920×1080 (2.1 MP) | 1920×1080, 1280×720, 854×480 | 1–50 |
-| `fast` | 1332×990 | 1332×990 (1.3 MP) | 1280×960, 640×480 | 1–120 |
+| Stream | Size |
+|---|---|
+| sensor mode | 2028×1520 |
+| main (snapshot source) | 2028×1520 (3.1 MP) |
+| lores → H.264 (user choice) | **1440×1080** (default), 1024×768, 640×480 |
+| fps | 1–40 |
 
-The exact sizes and the cropping behaviour are checked in the M0 spike and
-then fixed in the profile table in Go (`internal/camera/profiles.go`). The
-helper takes explicit sizes, so changing profiles never touches the helper.
+The exact sizes (after `align_configuration`) are confirmed in the M0 spike and
+then fixed as constants in Go (`internal/camera/config.go`). The helper takes
+explicit sizes, so adding other sensor modes later doesn't touch the helper.
 
 Picamera2 video configuration (conceptually):
 ```python
@@ -155,20 +164,21 @@ cfg = picam2.create_video_configuration(
     controls={"FrameDurationLimits": (d, d)},
 )
 picam2.configure(cfg)
-picam2.start_encoder(H264Encoder(bitrate=..., repeat=True, iperiod=gop, profile=...),
+picam2.start_encoder(H264Encoder(bitrate=..., repeat=True, iperiod=gop, profile="high"),
                      SocketOutput(...), name="lores")
 picam2.start()
 ```
 `repeat=True` puts SPS/PPS before every IDR, so any viewer can start at any
-keyframe.
+keyframe. The H.264 profile is fixed at `high`. Flips come from startup flags
+(`-hflip`, `-vflip`) and are not editable in the UI.
 
 ### 3.2 What each kind of change costs
 
 | Change | Mechanism | Stream impact |
 |---|---|---|
-| Exposure (auto/manual, shutter, gain, EV, metering, mode), AWB (mode, manual gains), brightness, contrast, saturation, sharpness, noise reduction, **zoom/ROI** (`ScalerCrop`), **fps within the mode** (`FrameDurationLimits`) | `set_controls` (live) | **none**, takes effect a few frames later |
-| Bitrate, GOP, H.264 profile | restart the encoder only | new IDR, a gap of tens of ms (to measure) |
-| Profile / stream size / sensor mode / flips / buffer count | reconfigure inside the helper (stop → configure → start) | short gap, a few hundred ms expected (to measure) |
+| Exposure (auto/manual, shutter, gain, EV, metering, mode), AWB (mode, manual gains), brightness, contrast, saturation, sharpness, noise reduction, **fps within the mode** (`FrameDurationLimits`) | `set_controls` (live) | **none**, takes effect a few frames later |
+| Bitrate, GOP | restart the encoder only | new IDR, a gap of tens of ms (to measure) |
+| Stream size | reconfigure inside the helper (stop → configure → start) | short gap, a few hundred ms expected (to measure) |
 | Helper crash | Go restarts the helper | about 1–3 s (process and camera init) |
 
 ### 3.3 Still capture (snapshot from the live stream)
@@ -176,8 +186,7 @@ The helper takes the next completed request, copies the `main` buffer
 (~4.6 MB for 2028×1520 YUV420), releases the request at once, and encodes
 JPEG in a worker thread. The H.264 stream on lores keeps running, so there is
 **no interruption**.
-- Resolution = the main stream size of the active profile (3.1 MP for `4:3`,
-  2.1 MP for `16:9`, 1.3 MP for `fast`).
+- Resolution = the main stream size, 2028×1520 (3.1 MP).
 - Exposure and white balance are exactly those of the live stream (it is the
   same frame).
 - The file is written to `<path>.jpg.tmp` and then renamed. Go sends it to the
@@ -190,7 +199,7 @@ switching mode inside the helper (short pause), and DNG from a raw stream.
 ### 3.4 Metadata
 A Picamera2 `post_callback` samples per-frame metadata at about 2 Hz:
 `ExposureTime`, `AnalogueGain`, `DigitalGain`, `ColourGains`,
-`ColourTemperature`, `Lux`, `FrameDuration`, `ScalerCrop`, and `FocusFoM`
+`ColourTemperature`, `Lux`, `FrameDuration`, and `FocusFoM`
 if present. These are sent as events. The UI shows them live, and offers a
 **"lock current"** button that copies the current auto values into manual
 settings. `FocusFoM` acts as a **focus meter** for the HQ camera's manual lens.
@@ -245,7 +254,8 @@ the existing sockets.
 - `-helper=spawn` (default): Go embeds `camhelper.py` (`embed`), writes it to
   the runtime directory, runs `python3 camhelper.py --ctl … --video …`,
   forwards its stderr to the log, and restarts it with backoff (1 s, 2 s, 4 s …
-  30 s).
+  30 s) when it exits or either socket closes. There is no ping/heartbeat:
+  liveness = the process is running and both sockets are open.
 - `-helper=external`: Go only listens. Useful when the helper runs under
   systemd, while developing it by hand, or when testing a C++ helper.
 - On connect, the helper sends `hello` (protocol version, camera info, sensor
@@ -308,6 +318,8 @@ codec), `metadata` (2 Hz), `drop` (frames dropped for this viewer).
 - The kernel send buffer is kept small (`SetWriteBuffer(256 KiB)` through
   `http.Server.ConnContext`) so backlog lands in our queue, where we can drop
   it. There is a per-write deadline of 5 s, and keepalives every 2 s.
+- Server-side dropping is the **only** latency control; the browser does not
+  skip frames itself.
 
 ### 5.4 Browser player (`player.js`, vanilla)
 - `fetch('/stream')`, then `getReader()`, then parse headers. On an SPS change,
@@ -315,11 +327,12 @@ codec), `metadata` (2 Hz), `drop` (frames dropped for this viewer).
   true, hardwareAcceleration: 'prefer-hardware'})`. No `description` is passed,
   so chunks are Annex-B.
 - Only the newest decoded frame is drawn, on `requestAnimationFrame`; older
-  frames are closed. If `decodeQueueSize > 3` or the estimated latency stays
-  over 400 ms, non-key frames are skipped until the next IDR.
-- Latency estimate = client now − `ts` − clock offset. The offset comes from
-  `/api/time` (NTP-style, the minimum RTT of 5 samples).
-- The stream reconnects with backoff, and is aborted while the tab is hidden.
+  frames are closed.
+- No latency estimate in the browser: latency is measured glass-to-glass by
+  hand (camera pointed at an on-screen ms clock). The `ts` field stays in the
+  wire format for debugging.
+- If the stream ends or fails, it reconnects every **2 s** (fixed interval).
+  It keeps running in hidden tabs.
 
 ---
 
@@ -337,15 +350,13 @@ type Config struct {
     Still    Still    // used per capture only
 }
 type Pipeline struct {
-    Profile      string // "4:3" | "16:9" | "fast"
-    StreamSize   Size   // must be one of the profile's lores choices
-    HFlip, VFlip bool   // rotation 180 = both
+    StreamSize   Size   // 1440x1080 | 1024x768 | 640x480
     BufferCount  int
 }
+// Flips (-hflip/-vflip) are startup flags, not part of the editable config.
 type Encoder struct {
-    Bitrate int    // bps
-    GOP     int    // frames between IDRs
-    Profile string // baseline|main|high
+    Bitrate int // bps
+    GOP     int // frames between IDRs
 }
 type Controls struct {
     FPS        float64       // → FrameDurationLimits (d,d)
@@ -360,7 +371,6 @@ type Controls struct {
     WBGainR, WBGainB float64 // → ColourGains (manual WB)
     Brightness, Contrast, Saturation, Sharpness float64
     Denoise    string        // → NoiseReductionMode
-    Zoom       Rect          // normalised → ScalerCrop (sensor pixels, from ScalerCropMaximum)
 }
 type Still struct {
     Quality int // JPEG quality 1..100
@@ -381,12 +391,8 @@ type Still struct {
 | GET | `/static/{file}` | embedded JS/CSS |
 | GET | `/stream` | framed H.264 (§5.2) |
 | GET | `/api/config` | full `Config` |
-| PUT | `/api/config` | partial JSON merged onto the config; reply says what was done: `{"applied": "live"\|"encoder"\|"reconfigure", "config": {...}}` |
-| PATCH | `/api/controls` | fast path for sliders: only `Controls` fields, always live |
+| POST | `/api/config` | **the only settings endpoint**: partial JSON merged onto the config. Go decides what to do (live controls / encoder restart / reconfigure). Reply: `{"applied": "live"\|"encoder"\|"reconfigure", "config": {...}}` |
 | POST | `/api/config/reset` | defaults |
-| GET | `/api/capabilities` | profiles, control ranges, sensor modes (from `hello`) |
-| GET | `/api/status` | state, helper pid/uptime/restarts, viewers, fps, bitrate, CPU temperature, last error, last metadata |
-| GET | `/api/time` | clock-offset helper |
 | POST | `/api/capture` | optional `{"quality": 95}` → replies with **the JPEG itself** (`image/jpeg`, `Content-Disposition: attachment; filename=IMG_YYYYMMDD_HHMMSS.jpg`, headers `X-Capture-Width/Height`) |
 
 Security: **none in the app at this stage** (no TLS, no auth). Run it on a
@@ -396,12 +402,13 @@ validated, typed values, and file names are always generated by Go, never
 taken from the client.
 
 ### 6.3 UI
-- Live video canvas with stats overlay (fps, kbps, resolution, latency,
-  drops) and a state overlay (reconfiguring / capturing / reconnecting).
-- **Live controls** (exposure, WB, image, zoom, fps): sliders send `PATCH
-  /api/controls` (100 ms debounce). There is no Apply button for these.
-- **Pipeline and encoder** settings (profile, stream size, flips, bitrate,
-  GOP): an explicit **Apply** button marked "briefly interrupts stream".
+- Live video canvas with stats overlay (fps, kbps, resolution, drops) and a
+  state overlay (reconfiguring / reconnecting).
+- **Settings form** with hard-coded fields and ranges (rendered by the
+  template from Go constants; no capabilities endpoint). Every input sends
+  `POST /api/config` on its **`change` event** (slider released, select
+  changed, field committed), with no debounce and no Apply button. Fields that
+  interrupt the stream briefly (stream size, bitrate, GOP) are labelled.
 - **Readout** of live AE/AWB values from metadata, with **Lock current** and a
   focus meter (`FocusFoM` bar).
 - **Capture** button: a snapshot without interrupting the stream; the
@@ -424,7 +431,7 @@ camera_rpi/
 ├── internal/
 │   ├── proto/                      PROTOCOL.md types: framing, messages (shared by server, fakecam, tests)
 │   ├── helper/                     listener, session (ctl RPC + video reader), supervisor (spawn/restart)
-│   ├── camera/                     Config, profiles, validation, controls mapping, diff, Manager, persistence
+│   ├── camera/                     Config, validation, controls mapping, diff, Manager, persistence
 │   ├── stream/                     Hub, per-viewer queues, browser wire format
 │   ├── h264/                       NAL type scan, SPS → codec string (small)
 │   └── web/                        server, handlers, templates/, static/
@@ -440,7 +447,7 @@ camera_rpi/
 |---|---|
 | Sensor exposure and readout | ~33 ms (less at higher fps) |
 | ISP and HW H.264 encode | 10–20 ms |
-| Helper hand-off (Python callback, queue, socket) | < 1–2 ms (to measure; GIL contention from JPEG encoding is a risk) |
+| Helper hand-off (Python callback, socket write) | < 1–2 ms (to measure; GIL contention from JPEG encoding is a risk) |
 | Go hub and HTTP write | ~1 ms |
 | Network | LAN 1–5 ms; internet RTT/2 plus I-frame serialisation |
 | Browser HW decode | 5–15 ms |
@@ -453,8 +460,8 @@ camera_rpi/
 
 | Risk | Mitigation |
 |---|---|
-| Python GIL: a JPEG encode of a 3 MP frame (software, ~0.1–0.2 s?) stalls the video sender thread and adds jitter | measure in M0; encode in a separate **process** (`multiprocessing`) if needed, or use the HW MJPEG encoder for snapshots |
-| lores/main aspect and crop behave differently than assumed | M0 spike; the profile table lives in Go and is easy to adjust |
+| Python GIL: a JPEG encode of a 3 MP frame (software, ~0.1–0.2 s?) stalls the encoder output thread (which writes the video socket directly) and adds jitter | measure in M0; encode in a separate **process** (`multiprocessing`) if needed, or use the HW MJPEG encoder for snapshots |
+| No helper-side queue: if Go stops reading `video.sock`, the encoder output thread blocks and the camera pipeline stalls | Go reads `video.sock` in a dedicated goroutine that only hands messages to the non-blocking hub; 1 MiB `SO_SNDBUF` absorbs short hiccups. Add a queue back if M1 shows stalls |
 | Picamera2 API differences between versions (`Output.outputframe` signature, encoder args) | pin a minimum version in `hello`; use `*args, **kwargs` in the output adapter |
 | TCP latency build-up over the internet | drop-to-keyframe, small send buffer; WebRTC as the upgrade path |
 | WebCodecs needs a secure context, and the app has no TLS | SSH forward, browser flag, or an external HTTPS tunnel (§5.1); clear message in the page |

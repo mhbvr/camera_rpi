@@ -55,7 +55,7 @@ opened, not started, and no video is sent.
 {"event": "metadata", "data": { ... }}
 ```
 - `id`: positive integer chosen by the server. Responses can come **out of
-  order** (a snapshot's JPEG encode must not block `ping`), so the server matches
+  order** (a snapshot's JPEG encode must not block `set_controls`), so the server matches
   them by id.
 - Requests that touch the camera configuration (`configure`, `snapshot`,
   `set_encoder`, `stop`) run **one at a time** inside the
@@ -69,8 +69,8 @@ opened, not started, and no video is sent.
 |---|---|---|
 | `hello` | see §3.4 | first message on connect |
 | `state` | `{"state": "idle"\|"starting"\|"streaming"\|"reconfiguring"\|"error", "detail": "..."}` | on every change |
-| `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "ScalerCrop": [x,y,w,h], "FocusFoM": 1234, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
-| `stats` | `{"fps": 30.0, "frames": 12345, "dropped": 0, "queue": 1}` | 1 Hz |
+| `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "FocusFoM": 1234, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
+| `stats` | `{"fps": 30.0, "frames": 12345}` | 1 Hz |
 | `error` | `{"code": "...", "message": "..."}` | asynchronous errors (for example the encoder failed) |
 
 ### 3.3 Commands
@@ -84,10 +84,10 @@ helper stops, reconfigures and restarts (the video channel gets a new
   "sensor":  {"size": [2028,1520], "bit_depth": 12},
   "main":    {"size": [2028,1520], "format": "YUV420"},
   "lores":   {"size": [1440,1080], "format": "YUV420"},
-  "transform": {"hflip": false, "vflip": false},
+  "transform": {"hflip": false, "vflip": false},     // from server startup flags
   "buffer_count": 6,
   "controls": {"FrameDurationLimits": [33333,33333], "AeEnable": true},
-  "encoder": {"codec": "h264", "bitrate": 6000000, "iperiod": 30, "profile": "high"},
+  "encoder": {"codec": "h264", "bitrate": 6000000, "iperiod": 30},   // H.264 profile fixed: high
   "metadata_hz": 2
 }}
 → {"id":1,"ok":true,"result":{
@@ -105,7 +105,7 @@ does the mapping). Unknown control → `invalid_args`.
   "AwbEnable": true, "AwbMode": 0, "ColourGains": [1.8,1.5],
   "ExposureValue": 0.0, "AeMeteringMode": 0, "AeExposureMode": 0,
   "Brightness": 0.0, "Contrast": 1.0, "Saturation": 1.0, "Sharpness": 1.0,
-  "NoiseReductionMode": 1, "ScalerCrop": [0,0,4056,3040],
+  "NoiseReductionMode": 1,
   "FrameDurationLimits": [20000,20000]
 }}}
 → {"id":2,"ok":true}
@@ -117,7 +117,7 @@ needs no name tables. The names come from `hello.controls[*].values`.
 Restarts only the encoder with new parameters. The video channel gets a new
 `stream_start` and starts with an IDR.
 ```json
-{"id":3,"cmd":"set_encoder","args":{"bitrate":4000000,"iperiod":30,"profile":"high"}}
+{"id":3,"cmd":"set_encoder","args":{"bitrate":4000000,"iperiod":30}}
 ```
 
 #### `snapshot`
@@ -142,11 +142,6 @@ Rules:
 
 #### `stop`
 Stops streaming and returns to idle (the camera stays open).
-
-#### `ping`
-`{"id":9,"cmd":"ping"}` → `{"id":9,"ok":true,"result":{"mono_ns": 123, "wall_us": 456}}`.
-Used for a liveness check (every 5 s; 3 missed pings → the server restarts the
-helper) and for measuring IPC latency.
 
 #### `shutdown`
 Respond, release the camera, exit 0.
@@ -207,14 +202,16 @@ offset size field
 - **type 3 (stream_end):** JSON `{"session": 3, "reason": "reconfigure"|"encoder"|"stop"|"error"}`.
 
 ### Flow control
-- The helper keeps a **bounded queue** (default 60 AUs) between the encoder
-  callback and the socket-writing thread, so a slow reader never blocks the
-  camera or encoder threads. When the queue is full, it drops AUs **until the
-  next IDR** and reports the count in `stats.dropped`.
-- The server reads `video.sock` continuously, in a dedicated goroutine, into
-  the hub (which applies its own per-viewer policy). In normal operation the
-  helper-side queue stays at 0–1.
-- Recommended `SO_SNDBUF` on the helper side: 1 MiB (one I-frame or more).
+- **No helper-side queue**: the encoder output callback writes each AU
+  straight to `video.sock` (`sendall`, under a lock shared with nothing else).
+  A slow reader would therefore block the encoder thread, so:
+- the server **must** read `video.sock` continuously, in a dedicated goroutine
+  that only hands messages to the non-blocking hub (which applies its own
+  per-viewer drop policy);
+- the helper sets `SO_SNDBUF` to 1 MiB (one I-frame or more) to absorb short
+  hiccups.
+- Liveness: there is no ping. A session is alive while the helper process runs
+  and both sockets are open.
 
 ## 5. Versioning
 - `hello.proto` is an integer. The server refuses (logs and restarts) a helper

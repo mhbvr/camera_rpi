@@ -25,18 +25,18 @@ to `docs/SPIKE.md`.
 
 | # | Experiment | Measure / decide |
 |---|---|---|
-| 0.1 | `picam2.sensor_modes`, `camera_controls`, `camera_properties` dump | Real mode list and control ranges → feeds the profile table and `hello` |
+| 0.1 | `picam2.sensor_modes`, `camera_controls`, `camera_properties` dump | Real mode list and control ranges → feeds the Go constants and `hello` |
 | 0.2 | Video config main 2028×1520 + lores 1440×1080 YUV420, `H264Encoder` on lores, custom `Output.outputframe` | Is each call **exactly one AU**? Is the keyframe flag correct? Are SPS/PPS present with `repeat=True`? What does the `timestamp` argument mean (µs, clock domain vs `SensorTimestamp` and `time.monotonic_ns()`)? The `outputframe` signature on the installed version. CPU % at 30 fps |
 | 0.3 | Capture-to-hand-off latency | `time.monotonic_ns() - SensorTimestamp` at `outputframe` (if same clock domain), averaged over 300 frames |
 | 0.4 | `capture_request()` + copy main while encoding | Any gaps in encoder frame timestamps (no dropped frames)? Copy time for 2028×1520 YUV420 |
 | 0.5 | JPEG encode of a 2028×1520 YUV420 buffer in a worker thread | Encode time. **Jitter of video `outputframe` intervals during the encode** (GIL impact). If jitter > 10 ms → plan to encode in a subprocess |
-| 0.6 | Aspect and crop: profile `16:9` (mode 2028×1080, main 1920×1080, lores 1280×720) and `fast` | `ScalerCrop` metadata and a visual check (circle target) → no stretch? Final sizes after `align_configuration` |
+| 0.6 | Stream sizes in the 2028×1520 mode: lores 1440×1080, 1024×768, 640×480 | Visual check (circle target) → no stretch? Final sizes after `align_configuration` |
 | 0.7 | `set_controls` latency | Frames until `ExposureTime` metadata reflects the change; FrameDurationLimits change at runtime works within a mode |
 | 0.8 | Unix socket hand-off | Python `sendall` of 200 KB frames to a local reader: per-message latency (expected tens of µs) |
-| 0.9 | Encoder bitrate/profile limits | 1440×1080@40, 1920×1080@50 (`16:9`), 1280×960@120 (`fast`) stable? |
+| 0.9 | Encoder limits | 1440×1080@40 at 2–12 Mbit/s stable? |
 
 **Exit criteria:** `docs/SPIKE.md` holds numbers for each row. DESIGN.md
-profiles and risks are updated. Decision recorded: JPEG encode in a thread or
+sizes and risks are updated. Decision recorded: JPEG encode in a thread or
 in a subprocess.
 
 ---
@@ -72,7 +72,6 @@ spawned, supervised and auto-restarted. Everything also runs without a Pi using
        callback into the hub (avoids one copy).
      - `Done() <-chan struct{}`, `Err()`: closing either connection ends the
        session.
-     - pinger: every 5 s; 3 failures → close.
    - `Supervisor` (spawn mode): writes the embedded `camhelper.py` to the
      runtime dir, `exec.Command("python3", script, "--ctl", …, "--video", …)`,
      pipes stderr into `log` with prefix `[helper]`, restarts on exit with
@@ -81,12 +80,12 @@ spawned, supervised and auto-restarted. Everything also runs without a Pi using
    - Tests use an in-process fake helper (goroutine speaking the protocol over
      real sockets in `t.TempDir()`).
 4. **`helper/camhelper.py` v1** (L): see "Helper internals" below.
-   Commands: `hello`, `configure` (fixed or arg-driven), `ping`, `stop`,
+   Commands: `hello`, `configure` (fixed or arg-driven), `stop`,
    `shutdown`; events: `state`, `stats`; video: `stream_start`, AUs.
 5. **`cmd/fakecam`** (M): Go implementation of the helper side for dev/CI.
    - Reads a `.h264` Annex-B file (needs a small AU splitter: `internal/h264`
      `SplitAnnexB` — used **only** by fakecam), loops it at the configured fps,
-     sends `hello` with IMX477-like fake modes and controls, and accepts all
+     sends `hello` with an IMX477-like fake mode and controls, and accepts all
      commands (`snapshot` writes a generated JPEG via `image/jpeg`).
    - Test asset generation documented: `ffmpeg -f lavfi -i testsrc2=size=1440x1080:rate=30 -c:v libx264 -profile:v high -bf 0 -g 30 -x264-params repeat-headers=1 testdata/test_1440x1080.h264`
      (a small file is committed in `testdata/`; the generator script is in `spike/`).
@@ -104,15 +103,14 @@ spawned, supervised and auto-restarted. Everything also runs without a Pi using
    state events to the hub (as browser events).
 9. **`internal/web` (minimal)** (M): `GET /`, `/static/*` (embed), `GET /stream`
    (subscribe, set headers, write loop with `http.ResponseController`
-   `Flush` + `SetWriteDeadline`), `GET /api/status`, `GET /api/time`. Small
-   `SetWriteBuffer` via `ConnContext`.
+   `Flush` + `SetWriteDeadline`). Small `SetWriteBuffer` via `ConnContext`.
 10. **Frontend player** (M): `static/player.js` (fetch reader, parser,
-    VideoDecoder, rAF render, newest-frame-only, reconnect, visibility
-    handling), `static/app.js` (stats overlay, latency via `/api/time`
-    offset), `templates/index.html`, `static/style.css`.
+    VideoDecoder, rAF render, newest-frame-only, reconnect every 2 s),
+    `static/app.js` (stats overlay: fps, kbps, resolution, drops),
+    `templates/index.html`, `static/style.css`.
 11. **`cmd/camweb/main.go`** (S): flags (`-listen`, `-data`, `-runtime-dir`,
-    `-helper spawn|external`, `-helper-cmd`, `-python`), wiring, graceful
-    shutdown on SIGINT/SIGTERM.
+    `-helper spawn|external`, `-helper-cmd`, `-python`, `-hflip`, `-vflip`),
+    wiring, graceful shutdown on SIGINT/SIGTERM.
 
 ### Helper internals (`camhelper.py`, target ≤ 500 lines, stdlib + Picamera2 only)
 ```
@@ -120,23 +118,22 @@ main()
  ├─ parse args, logging → stderr
  ├─ connect ctl, video (retry 10 s)
  ├─ cam = Camera()                      # wraps Picamera2, holds cam_lock
- ├─ VideoSender(video_sock)             # thread: deque(maxlen-managed) → sendall(header+payload)
  ├─ send hello
  └─ CtlLoop (main thread): read lines → dispatch
-       quick cmds (ping, set_controls)   → handled inline
+       quick cmds (set_controls)         → handled inline
        camera cmds (configure, snapshot, set_encoder, stop)              
                                          → worker thread, guarded by cam_lock (busy if held)
 SocketOutput(picamera2.outputs.Output)
    outputframe(frame, keyframe=True, timestamp=None, *a, **kw)
-       → VideoSender.put(AU(bytes(frame), key, ts, wall_us=time.time_ns()//1000))
+       → video_sock.sendall(pack_header(...) + frame)   # direct write, no queue
 post_callback(request)                   # metadata sampler, rate-limited to metadata_hz
 StillWorker                              # thread (or subprocess if M0 says so): encode JPEG from the copied main buffer
 ```
 - Every exception in a command → error response; unhandled exception in a
   thread → `error` event and exit(1) (the supervisor restarts).
 - SIGTERM → close the camera cleanly.
-- No global mutable state outside `Camera` and `VideoSender`. Wire framing is
-  in one function (`pack_header`), mirroring `internal/proto`.
+- No global mutable state outside `Camera`. Wire framing is in one function
+  (`pack_header`), mirroring `internal/proto`.
 
 ### Acceptance criteria
 - [ ] `go test ./...` passes; `go vet` is clean; the binary builds for
@@ -145,9 +142,9 @@ StillWorker                              # thread (or subprocess if M0 says so):
   plays; killing fakecam shows "reconnecting"; restarting
   it resumes video.
 - [ ] On the Pi: 1440×1080@30 plays in Chrome on the LAN (via SSH forward or
-  the insecure-origin flag, see DESIGN §5.1). The stats overlay
-  shows the latency estimate. **Glass-to-glass measured** (camera pointed at an
-  on-screen ms clock) and recorded in `docs/SPIKE.md`. Target ≤ 150 ms.
+  the insecure-origin flag, see DESIGN §5.1). **Glass-to-glass latency
+  measured** (camera pointed at an on-screen ms clock) and recorded in
+  `docs/SPIKE.md`. Target ≤ 150 ms.
 - [ ] `kill -9` of the helper → stream recovers by itself in < 5 s.
 - [ ] Three browser tabs at once; CPU usage of camweb and the helper recorded.
 
@@ -158,13 +155,13 @@ StillWorker                              # thread (or subprocess if M0 says so):
 ### Tasks
 1. **Config model** (`internal/camera/config.go`) (M): structs from DESIGN
    §6.1, `Defaults()`, `Validate(caps) error` (ranges from `hello` plus
-   Go-side limits), `Merge(partial json)`, JSON persistence
+   Go-side limits; stream size one of 1440×1080 / 1024×768 / 640×480), `Merge(partial json)`, JSON persistence
    (`<data>/config.json`, atomic write via temp + rename).
-2. **Profiles** (`profiles.go`) (S): the table from DESIGN §3.1 using M0
-   numbers; profile → `ConfigureArgs` (sensor, main, lores, FrameDurationLimits).
+2. **Configure args** (S): constants from DESIGN §3.1 (M0 numbers) + config
+   + flip flags → `ConfigureArgs` (sensor, main, lores, transform,
+   FrameDurationLimits, encoder with fixed `high` profile).
 3. **Control mapping** (`controls.go`) (M): `Controls` → libcamera control map
-   (enum names → ints using `hello` values; normalised zoom → `ScalerCrop`
-   from `scaler_crop_max`, keeping aspect; fps → `FrameDurationLimits`;
+   (enum names → ints using `hello` values; fps → `FrameDurationLimits`;
    manual vs auto exposure and WB). Table-driven tests.
 4. **Diff and apply** (`manager.go`) (M): `Apply(new Config) (ApplyKind, error)`
    - Pipeline differs → `configure` (includes encoder and controls).
@@ -176,35 +173,34 @@ StillWorker                              # thread (or subprocess if M0 says so):
      config.
    - Manager serialises Apply/Capture calls with a mutex (helper `busy` should
      never happen).
-5. **Capabilities** (S): build `/api/capabilities` from `hello` plus profiles.
-6. **Helper commands** (M): `configure` fully arg-driven, `set_controls`
+5. **Helper commands** (M): `configure` fully arg-driven, `set_controls`
    (whitelist = names in `camera_controls`), `set_encoder`, `metadata` events
    via `post_callback`.
-7. **HTTP API** (M): `GET/PUT /api/config`, `PATCH /api/controls`,
-   `POST /api/config/reset`, `GET /api/capabilities`; JSON errors
+6. **HTTP API** (S): `GET /api/config`, `POST /api/config` (partial, the
+   only settings endpoint), `POST /api/config/reset`; JSON errors
    `{"error": "...", "field": "..."}`.
-8. **UI** (L): settings panel generated from `/api/capabilities` (ranges,
-   enums) in plain JS:
-   - live sections (Exposure, WB, Image, Zoom, FPS) → `PATCH /api/controls`
-     with a 100 ms debounce; a logarithmic shutter slider; an auto/manual
-     toggle that disables the manual inputs;
-   - Pipeline/Encoder sections with an **Apply** button ("interrupts stream
-     briefly"), presets (LAN HQ / Internet / Mobile / Low-latency);
+7. **UI** (L): a settings form with hard-coded fields and ranges (rendered by
+   the template from Go constants), in plain JS:
+   - every input sends `POST /api/config` on its `change` event (no debounce,
+     no Apply button); fields that briefly interrupt the stream (stream size,
+     bitrate, GOP) are labelled;
+   - sections: Stream (size, fps, bitrate, GOP), Exposure (auto/manual toggle
+     that disables manual inputs, logarithmic shutter slider, gain, EV,
+     metering, mode), White balance, Image (brightness, contrast, saturation,
+     sharpness, denoise);
    - metadata readout (shutter as 1/x s, gain, CT, lux), **Lock current**,
-     and a `FocusFoM` bar with a peak-hold marker;
-   - "1:1 zoom" focus-assist button (centre crop at native sensor resolution).
+     and a `FocusFoM` bar with a peak-hold marker.
 
 ### Acceptance criteria
-- [ ] Moving exposure, gain, WB, contrast and zoom sliders changes the image
+- [ ] Moving exposure, gain, WB and contrast sliders changes the image
   with **no stream interruption** (no `stream_start` in the log).
 - [ ] Bitrate change → new encoder session; the gap is logged and below
   200 ms (or the M0 number).
-- [ ] Profile change (4:3 ↔ 16:9 ↔ fast) works; the decoder reconfigures
-  automatically in the browser.
+- [ ] Stream size change (1440×1080 ↔ 1024×768 ↔ 640×480) works; the
+  decoder reconfigures automatically in the browser.
 - [ ] Invalid values are rejected with a clear error; the config survives
   server and helper restarts.
-- [ ] Unit tests: validation, merge, diff → ApplyKind, control mapping
-  (including zoom math).
+- [ ] Unit tests: validation, merge, diff → ApplyKind, control mapping.
 
 ---
 
@@ -226,7 +222,7 @@ StillWorker                              # thread (or subprocess if M0 says so):
 ### Acceptance criteria
 - [ ] Capture during streaming: **no gap** in the video (seq/pts continuous
   in the helper log); the JPEG has the main-stream resolution of the active
-  profile (2028×1520 for `4:3`).
+  stream (2028×1520).
 - [ ] Snapshot exposure and colour match the live view.
 - [ ] Twenty captures in a row: no helper restarts, no visible stutter in the
   stream (or stutter within the M0 jitter numbers).
@@ -236,18 +232,17 @@ StillWorker                              # thread (or subprocess if M0 says so):
 ## M4 — Polish — M
 
 1. **Backpressure tuning** (M): Chrome DevTools throttling (3G/4G profiles)
-   and `tc netem` on the Pi (delay, loss). Tune the queue size, send buffer
-   and client skip thresholds. Write down the results.
-2. **Status details** (S): helper pid, uptime, restarts, versions, CPU
-   temperature (`/sys/class/thermal/thermal_zone0/temp`).
-3. **Deploy** (S): `deploy/camweb.service` (User=pi, `video` group,
+   and `tc netem` on the Pi (delay, loss). Tune the hub queue size and the
+   send buffer. Write down the results.
+2. **Deploy** (S): `deploy/camweb.service` (User=pi, `video` group,
    `RuntimeDirectory=camweb`, Restart=on-failure) and install steps.
-4. **README** (S): quick start, flags, how to get a secure context (SSH
+3. **README** (S): quick start, flags, how to get a secure context (SSH
    forward / browser flag / Tailscale / Cloudflare Tunnel), troubleshooting.
 
 ### Acceptance criteria
 - [ ] Through an SSH forward or tunnel over the internet: 1080p30 at
-  5 Mbit/s stable for 30 min, latency does not creep (stats overlay).
+  5 Mbit/s stable for 30 min; glass-to-glass latency at the end is the same
+  as at the start.
 - [ ] With 2 Mbit/s throttling and a 6 Mbit/s stream: latency stays bounded
   (< 1.5 s) thanks to drops, and recovers when the throttle is removed.
 
