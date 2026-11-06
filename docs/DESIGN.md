@@ -209,7 +209,61 @@ A Picamera2 `post_callback` samples per-frame metadata at about 2 Hz:
 `ColourTemperature`, `Lux`, `FrameDuration`, and `FocusFoM`
 if present. These are sent as events. The UI shows them live, and offers a
 **"lock current"** button that copies the current auto values into manual
-settings. `FocusFoM` acts as a **focus meter** for the HQ camera's manual lens.
+settings. `FocusFoM` is shown as a raw number to help focus the HQ camera's
+manual lens (§3.5).
+
+### 3.5 Focus value (`FocusFoM`)
+The UI's **Focus** number is libcamera's `FocusFoM` metadata, shown raw. It is
+a **sharpness score computed by the image processor from the picture**, not
+something the lens reports. The HQ camera has no autofocus, and the value is
+computed for every camera.
+
+How the Pi 4 computes it (Raspberry Pi libcamera `main` at the time of writing,
+and kernel `rpi-6.6.y`):
+
+1. The ISP runs a fixed focus (contrast) filter and accumulates its output in
+   12 regions: *"Focus measure - accumulated output of the focus filter"*
+   ([bcm2835-isp.h#L310-L324](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/include/uapi/linux/bcm2835-isp.h#L310-L324),
+   [`FOCUS_REGIONS 12`](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/include/uapi/linux/bcm2835-isp.h#L278)).
+2. On the Pi 4 the regions form a 4 × 3 grid
+   ([controller.cpp#L40](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/controller.cpp#L40)).
+3. libcamera uses the second filter's sum over pixels above the threshold,
+   divided by 1000, per region
+   ([vc4.cpp#L278-L282](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L278-L282)).
+4. `FocusFoM` is the average of the central regions only: on 4 × 3 that is the
+   middle row, two middle columns, roughly the **middle third of the height and
+   middle half of the width**
+   ([ipa_base.cpp#L1641-L1663](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1641-L1663)).
+
+libcamera's definition: *"A larger FocusFoM value indicates a more in-focus
+frame … not necessarily aimed at providing a way to implement a focus algorithm
+by the application, rather an indication of how in-focus a frame is"*
+([control_ids_core.yaml#L657-L668](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_core.yaml#L657-L668)).
+
+**Reading it:** higher is sharper. There is no unit and no absolute scale,
+because the value is a sum that is not divided by the pixel count, so it depends
+on scene detail, brightness and exposure. Compare values only for the same
+scene and settings. Sensor noise at high gain raises it, so focus in good light
+with exposure locked (*Lock current*).
+
+**Not configurable:** nothing at runtime or in the tuning file changes how it
+is computed.
+- The ISP driver exposes no focus-statistics settings
+  ([bcm2835-isp.h#L18-L35](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/include/uapi/linux/bcm2835-isp.h#L18-L35)).
+- The grid, filter choice and centre averaging are fixed in code.
+- `imx477.json` has no focus section.
+- The autofocus window controls (`AfWindows`, `AfMetering`) exist only when a
+  movable lens is present
+  ([ipa_base.cpp#L105-L115](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L105-L115),
+  [#L278-L280](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L278-L280)).
+
+Possible later extensions:
+- `StatsOutputEnable` delivers the raw per-region statistics
+  ([control_ids_rpi.yaml#L10-L31](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_rpi.yaml#L10-L31)).
+  From those the helper could build a 4 × 3 sharpness map or a different
+  weighting.
+- The helper could compute its own sharpness metric over a chosen region of
+  the image.
 
 ---
 
@@ -440,8 +494,8 @@ taken from the client.
   `POST /api/config` on its **`change` event** (slider released, select
   changed, field committed), with no debounce and no Apply button. Fields that
   interrupt the stream briefly (stream size, bitrate, GOP) are labelled.
-- **Readout** of live AE/AWB values from metadata, with **Lock current** and a
-  focus meter (`FocusFoM` bar).
+- **Readout** of live AE/AWB values from metadata, with **Lock current**, and
+  the raw **Focus** value (`FocusFoM`, §3.5) with an ⓘ popup that explains it.
 - **Capture** button: a snapshot without interrupting the stream; the
   browser downloads the JPEG.
 - Collapsible `<details>` sections. Responsive layout for phones.

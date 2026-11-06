@@ -6,7 +6,6 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 let config = null;
 let lastMeta = null;
 let camLatency = null; // helper: sensor timestamp -> socket write, ms
-let focusPeak = 0;
 
 // ---------- helpers ----------
 const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
@@ -183,15 +182,8 @@ function showMeta(md) {
   if (md.AnalogueGain) $('#md-gain').textContent = md.AnalogueGain.toFixed(2);
   if (md.ColourTemperature) $('#md-ct').textContent = Math.round(md.ColourTemperature) + ' K';
   if (md.Lux != null) $('#md-lux').textContent = Math.round(md.Lux);
-  const fom = md.FocusFoM;
-  if (fom != null) {
-    focusPeak = Math.max(focusPeak, fom);
-    $('#focus-val').textContent = Math.round(fom);
-    $('#focus-bar').style.width = (focusPeak ? (100 * fom) / focusPeak : 0) + '%';
-    $('#focus-peak').style.left = '100%';
-  }
+  if (md.FocusFoM != null) $('#focus-val').textContent = Math.round(md.FocusFoM);
 }
-$('.focus').addEventListener('click', () => (focusPeak = 0));
 
 // ---------- player ----------
 const overlay = $('#overlay');

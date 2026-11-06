@@ -77,10 +77,31 @@
         <div>Lux <b id="md-lux">–</b></div>
       </div>
       <button id="lock" title="Copy the current automatic values into manual settings">Lock current</button>
-      <div class="focus" title="Focus figure of merit: turn the focus ring to maximise it. Click to reset the peak.">
+      <div class="focus">
         <span>Focus</span>
-        <div class="bar"><div id="focus-bar"></div><div id="focus-peak"></div></div>
         <b id="focus-val">–</b>
+        <button type="button" class="info" popovertarget="focus-info" aria-label="About the focus value">i</button>
+      </div>
+      <div id="focus-info" popover class="popover">
+        <h3>Focus value</h3>
+        <p>A <b>sharpness score</b> computed by the Pi's image processor from the
+          picture itself (libcamera <code>FocusFoM</code>). It does not come from the
+          lens: the HQ camera has no autofocus.</p>
+        <ul>
+          <li><b>Higher = sharper.</b> Turn the focus ring until the value peaks.</li>
+          <li><b>Centre only:</b> measured in the middle third of the height and the
+            middle half of the width. Put the subject there.</li>
+          <li><b>No unit or absolute scale:</b> the value depends on scene detail,
+            brightness and exposure. Compare values only for the same scene and
+            settings.</li>
+          <li><b>Noise raises it:</b> with high gain the grain counts as "detail".
+            Focus in good light, and press <i>Lock current</i> first so exposure
+            stays fixed while you turn the ring.</li>
+        </ul>
+        <p class="muted">Details: docs/DESIGN.md §3.5 ·
+          <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_core.yaml#L657-L668" target="_blank" rel="noopener">libcamera definition</a> ·
+          <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1641-L1663" target="_blank" rel="noopener">how it is computed</a></p>
+        <button type="button" popovertarget="focus-info" popovertargetaction="hide">Close</button>
       </div>
     </details>
 

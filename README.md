@@ -114,6 +114,18 @@ spike/             M0 hardware spike script
 deploy/            systemd unit
 ```
 
+## Focusing the HQ lens
+
+The **Focus** number under Exposure is a sharpness score computed by the image
+processor (libcamera `FocusFoM`); the lens itself reports nothing. Turn the
+focus ring until the number peaks.
+- It is measured in the centre of the frame only.
+- It has no absolute scale: compare values for the same scene and settings.
+- Noise at high gain inflates it, so lock exposure first with *Lock current*.
+
+The ⓘ button next to it explains the same; details and source links are in
+[DESIGN.md §3.5](docs/DESIGN.md).
+
 ## Troubleshooting
 
 - **"WebCodecs not available"**: see the secure-context section above.

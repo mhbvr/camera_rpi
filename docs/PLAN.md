@@ -216,7 +216,7 @@ StillWorker                              # thread (or subprocess if M0 says so):
      metering, mode), White balance, Image (brightness, contrast, saturation,
      sharpness, denoise);
    - metadata readout (shutter as 1/x s, gain, CT, lux), **Lock current**,
-     and a `FocusFoM` bar with a peak-hold marker.
+     and the raw `FocusFoM` value with an info popup (DESIGN §3.5).
 
 ### Acceptance criteria
 - [ ] Moving exposure, gain, WB and contrast sliders changes the image

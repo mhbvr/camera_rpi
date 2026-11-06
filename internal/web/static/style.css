@@ -39,11 +39,17 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .interrupts { font-size: 11px; color: var(--danger); margin-left: 4px; }
 .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; margin: 10px 0 6px; color: var(--muted); }
 .readout b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.focus { display: flex; gap: 8px; align-items: center; margin-top: 10px; cursor: pointer; color: var(--muted); }
-.focus .bar { position: relative; flex: 1; height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; }
-#focus-bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
-#focus-peak { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--danger); left: 100%; margin-left: -2px; }
-.focus b { min-width: 4em; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+.focus { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); }
+.focus b { color: var(--text); font-size: 18px; font-variant-numeric: tabular-nums; }
+button.info { width: 22px; height: 22px; padding: 0; border-radius: 50%; font: italic 600 13px/20px Georgia, serif; }
+.popover { max-width: min(440px, calc(100vw - 32px)); padding: 16px 20px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); color: var(--text); box-shadow: 0 8px 32px rgba(0,0,0,.3); }
+.popover::backdrop { background: rgba(0,0,0,.25); }
+.popover h3 { margin: 0 0 8px; font-size: 16px; }
+.popover ul { padding-left: 18px; margin: 8px 0; }
+.popover li { margin: 4px 0; }
+.popover .muted { color: var(--muted); font-size: 12px; }
+.popover a { color: var(--accent); }
 .warning { padding: 8px 12px; border-left: 3px solid var(--danger); background: var(--panel); }
 .toast { position: fixed; right: 16px; bottom: 16px; padding: 10px 14px; border-radius: 6px; background: #222; color: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.25); max-width: 90vw; }
 .toast.error { background: var(--danger); }
