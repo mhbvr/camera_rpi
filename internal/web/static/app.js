@@ -68,6 +68,7 @@ function updateEnabled() {
 function render(cfg) {
   config = cfg;
   describeProfile();
+  describeDenoise();
   fillCameraInfo();
   $$('[data-path]').forEach((el) => {
     setField(el, getPath(cfg, el.dataset.path));
@@ -244,6 +245,19 @@ function meteringMaps(modes, selected) {
       `<div style="grid-area:${r1}/${c1}/${r2}/${c2};--w:${(w[z] / max).toFixed(2)}" title="zone ${z}: weight ${w[z]}">${w[z]}</div>`).join('');
     return `<figure class="zones${ui === selected ? ' selected' : ''}"><div class="zone-grid">${cells}</div><figcaption>${ui}</figcaption></figure>`;
   }).join('');
+}
+
+// Denoise settings -> what the Pi 4 ISP does (libcamera vc4.cpp DenoiseModeTable).
+const DENOISE_DESC = {
+  auto: 'Spatial denoise + fast colour denoise (Picamera2 video default).',
+  off: 'No noise reduction.',
+  minimal: 'Spatial denoise only, no colour denoise.',
+  fast: 'Spatial denoise + fast colour denoise.',
+  high_quality: 'Spatial denoise + high-quality colour denoise (more processing).',
+};
+function describeDenoise() {
+  const el = $('#denoise-desc');
+  if (el && config) el.textContent = DENOISE_DESC[config.controls.denoise] ?? '';
 }
 
 // One-line description of the selected profile under the select.

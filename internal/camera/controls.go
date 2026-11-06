@@ -104,10 +104,14 @@ func ControlMap(c Controls, hello *proto.Hello) map[string]any {
 	} else {
 		m["ColourGains"] = []float64{c.WBGainR, c.WBGainB}
 	}
-	if c.Denoise != "auto" {
-		if v, ok := enumValue(hello, "NoiseReductionMode", c.Denoise); ok {
-			m["NoiseReductionMode"] = v
-		}
+	// "auto" is Picamera2's video default, Fast. It is sent explicitly so that
+	// switching back to "auto" from another mode takes effect.
+	denoise := c.Denoise
+	if denoise == "auto" {
+		denoise = "fast"
+	}
+	if v, ok := enumValue(hello, "NoiseReductionMode", denoise); ok {
+		m["NoiseReductionMode"] = v
 	}
 	return filterSupported(m, hello)
 }

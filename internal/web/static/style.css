@@ -44,6 +44,8 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .focus b { color: var(--text); font-size: 18px; font-variant-numeric: tabular-nums; }
 .row { display: flex; gap: 8px; align-items: center; margin: 8px 0 2px; }
 .row label.check { margin: 0; }
+.row .hint { margin: 0; flex: 1; }
+.row button.info { flex: none; }
 .readout-head { margin-top: 12px; }
 .mode-note { font-size: 11px; padding: 0 5px; border-radius: 3px; background: var(--line); color: var(--muted); }
 label button.info { margin-left: 2px; vertical-align: middle; }

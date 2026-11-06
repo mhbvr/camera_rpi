@@ -130,21 +130,31 @@
 
     <details>
       <summary>Image</summary>
-      <label>Brightness <output data-for="controls.brightness"></output>
+      <div class="row"><p class="hint">Processing applied by the image processor to the stream
+        and to snapshots. It does not change exposure.</p>
+        <button type="button" class="info" popovertarget="info-image" aria-label="About image processing">i</button></div>
+      <label>Brightness <output data-for="controls.brightness"></output> <button type="button" class="info" popovertarget="info-brightness" aria-label="About brightness">i</button>
         <input type="range" data-path="controls.brightness" min="{{.L.BrightnessMin}}" max="{{.L.BrightnessMax}}" step="0.05">
       </label>
-      <label>Contrast <output data-for="controls.contrast"></output>
+      <label>Contrast <output data-for="controls.contrast"></output> <button type="button" class="info" popovertarget="info-contrast" aria-label="About contrast">i</button>
         <input type="range" data-path="controls.contrast" min="0" max="{{.ContrastMax}}" step="0.05">
       </label>
-      <label>Saturation <output data-for="controls.saturation"></output>
+      <label>Saturation <output data-for="controls.saturation"></output> <button type="button" class="info" popovertarget="info-saturation" aria-label="About saturation">i</button>
         <input type="range" data-path="controls.saturation" min="0" max="{{.SaturationMax}}" step="0.05">
       </label>
-      <label>Sharpness <output data-for="controls.sharpness"></output>
+      <label>Sharpness <output data-for="controls.sharpness"></output> <button type="button" class="info" popovertarget="info-sharpness" aria-label="About sharpness">i</button>
         <input type="range" data-path="controls.sharpness" min="0" max="{{.SharpnessMax}}" step="0.1">
       </label>
-      <label>Denoise
-        <select data-path="controls.denoise">{{range .DenoiseModes}}<option>{{.}}</option>{{end}}</select>
+      <label>Denoise <button type="button" class="info" popovertarget="info-denoise" aria-label="About denoise">i</button>
+        <select data-path="controls.denoise">
+          <option value="auto">auto (= fast)</option>
+          <option value="off">off</option>
+          <option value="minimal">minimal</option>
+          <option value="fast">fast</option>
+          <option value="high_quality">high quality</option>
+        </select>
       </label>
+      <p id="denoise-desc" class="hint"></p>
     </details>
 
     <button id="reset">Reset to defaults</button>
@@ -283,6 +293,108 @@
   <p class="muted">Details: docs/DESIGN.md §3.7 ·
     <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/lux.cpp#L84-L105" target="_blank" rel="noopener">how it is computed</a></p>
   <button type="button" popovertarget="info-lux" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-image" popover class="popover">
+  <h3>Image processing</h3>
+  <p>These settings change how the image processor renders the picture:</p>
+  <ul>
+    <li><b>Brightness and contrast</b> reshape the tone curve (gamma).</li>
+    <li><b>Saturation</b> scales colour in the colour-correction matrix.</li>
+    <li><b>Sharpness</b> and <b>denoise</b> set the strength of the sharpening and
+      noise-reduction blocks.</li>
+  </ul>
+  <p>They apply live, to both the stream and snapshots, and work in auto and
+    manual exposure. They <b>do not change exposure</b>: no extra light reaches
+    the sensor and no hidden detail is recovered. For a brighter exposure use
+    EV, shutter or gain.</p>
+  <p class="muted">Details: docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-image" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-brightness" popover class="popover">
+  <h3>Brightness</h3>
+  <p>Shifts the output levels up or down after the tone curve: every value moves
+    by <code>brightness × full scale</code> (−1 … +1, default 0).</p>
+  <ul>
+    <li>+0.2 lifts blacks to grey (washed out); −0.2 crushes shadows to black.
+      Values are clipped at black and white.</li>
+    <li>This is not exposure: the sensor gets no extra light and dark detail is
+      not recovered. To brighten a dark scene use EV, shutter or gain.</li>
+  </ul>
+  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L143-L156" target="_blank" rel="noopener">how it is applied</a> · docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-brightness" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-contrast" popover class="popover">
+  <h3>Contrast</h3>
+  <p>Scales the tone curve around mid-grey: <code>(value − 50 %) × contrast + 50 %</code>
+    (default 1).</p>
+  <ul>
+    <li>&gt; 1: darker darks and brighter brights, with more clipping at both ends.</li>
+    <li>&lt; 1: flatter image; 0 is uniform grey.</li>
+    <li>Independently, an automatic <b>contrast enhancement</b> is always on (HQ
+      tuning): it pulls the darkest 1 % of pixels down and the brightest 5 % up,
+      by a limited amount, keeping the median where it is.</li>
+  </ul>
+  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L143-L156" target="_blank" rel="noopener">manual contrast</a> ·
+    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L99-L141" target="_blank" rel="noopener">automatic enhancement</a> · docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-contrast" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-saturation" popover class="popover">
+  <h3>Saturation</h3>
+  <p>Scales colour intensity: the colour-correction matrix is converted to
+    luma/chroma, the chroma is multiplied by the saturation, and the result is
+    converted back (default 1).</p>
+  <ul>
+    <li>0 = black and white; 1 = as tuned; 2 = twice the colour intensity.</li>
+    <li>Brightness (luma) is unchanged. Very high values posterise strong
+      colours.</li>
+  </ul>
+  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/ccm.cpp#L130-L145" target="_blank" rel="noopener">how it is applied</a> · docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-saturation" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-sharpness" popover class="popover">
+  <h3>Sharpness</h3>
+  <p>Strength of the image processor's sharpening filter (default 1, 0 = off).
+    For a setting <i>s</i>, the sharpening gain is multiplied by <i>s</i>, its limit by
+    √<i>s</i>, and its threshold divided by √<i>s</i>, so higher values also sharpen
+    finer, lower-contrast detail.</p>
+  <ul>
+    <li>Base values from the HQ tuning: threshold 0.75, strength 1.0, limit 0.5.</li>
+    <li>In this app's 2×2-binned sensor mode, libcamera halves strength and limit
+      and doubles the threshold.</li>
+    <li>Too much sharpening exaggerates noise and edge halos, and costs bitrate.
+      For focusing, the focus value is not affected by this setting.</li>
+  </ul>
+  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/sharpen.cpp#L52-L84" target="_blank" rel="noopener">how it is applied</a> · docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-sharpness" popovertargetaction="hide">Close</button>
+</div>
+<div id="info-denoise" popover class="popover">
+  <h3>Denoise</h3>
+  <p>The Pi 4 image processor has two noise filters:</p>
+  <ul>
+    <li><b>Spatial denoise</b> on the raw sensor data. Its strength follows the
+      sensor's noise model, so it automatically gets stronger at higher gain.</li>
+    <li><b>Colour denoise</b> removes coloured blotches, in a <i>fast</i> or a
+      <i>high quality</i> version.</li>
+  </ul>
+  <table>
+    <tr><th>setting</th><th>spatial</th><th>colour</th></tr>
+    <tr><td>off</td><td>off</td><td>off</td></tr>
+    <tr><td>minimal</td><td>on</td><td>off</td></tr>
+    <tr><td>fast, auto</td><td>on</td><td>fast</td></tr>
+    <tr><td>high quality</td><td>on</td><td>high quality</td></tr>
+  </table>
+  <ul>
+    <li><b>auto</b> is Picamera2's default for video, which is <i>fast</i>.</li>
+    <li>More denoise means a cleaner but softer image; in low light it also
+      saves bitrate. <i>High quality</i> costs more image-processor time.</li>
+    <li>The fast colour denoise works with the processor's second output, which
+      this app also uses for the stream. libcamera expects that output at a
+      quarter of the main size; its effect at our stream size is not
+      documented. Compare the settings at high gain to see.</li>
+  </ul>
+  <p class="muted"><a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L293-L325" target="_blank" rel="noopener">mode mapping</a> ·
+    <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L454-L490" target="_blank" rel="noopener">ISP setup</a> · docs/DESIGN.md §3.9</p>
+  <button type="button" popovertarget="info-denoise" popovertargetaction="hide">Close</button>
 </div>
 <div id="toast" class="toast" hidden></div>
 <script type="module" src="/static/app.js"></script>

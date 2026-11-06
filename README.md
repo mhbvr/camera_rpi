@@ -143,6 +143,11 @@ The ⓘ button next to it explains the same; details and source links are in
 Each control has an ⓘ popup; details with source links are in
 [DESIGN.md §3.6](docs/DESIGN.md).
 
+**Image** settings (brightness, contrast, saturation, sharpness, denoise) only
+change how the picture is rendered, not the exposure. Denoise "auto" is
+Picamera2's video default, *fast*: spatial plus fast colour denoise. See
+DESIGN.md §3.9.
+
 ## Troubleshooting
 
 - **"WebCodecs not available"**: see the secure-context section above.

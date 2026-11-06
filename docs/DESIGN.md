@@ -477,6 +477,88 @@ so the UI does not offer it.
 - The zone geometry is fixed in `internal/web/static/app.js`
   (`METERING_ZONES`), taken from the tuning guide figure.
 
+
+### 3.9 Image processing: brightness, contrast, saturation, sharpness, denoise
+
+These controls change how the ISP renders the image. They apply live to the
+stream and snapshots in both exposure modes, and they **do not change
+exposure**. Links: [raspberrypi/libcamera @ 9fe1678](https://github.com/raspberrypi/libcamera/tree/9fe1678b8ad5fbae875942b55b58ade23014194c).
+
+| Control | Range (UI) | libcamera algorithm | What it does |
+|---|---|---|---|
+| Brightness | −1…1, default 0 | `rpi.contrast` | adds `brightness × 65536` to the tone (gamma) curve output |
+| Contrast | 0…4, default 1 | `rpi.contrast` | scales the curve around mid-grey: `(y − 32768) × contrast + 32768` |
+| Saturation | 0…4, default 1 | `rpi.ccm` | scales chroma inside the colour-correction matrix |
+| Sharpness | 0…8, default 1 | `rpi.sharpen` | scales the ISP sharpening strength, limit and threshold |
+| Denoise | off / minimal / fast / high quality (auto = fast) | `rpi.sdn` + ISP colour denoise | selects spatial and colour noise reduction |
+
+**Brightness and contrast** are applied in one step at the end of the tone curve
+([contrast.cpp#L143-L156](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L143-L156), called from
+[#L160-L190](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L160-L190); the controls are mapped in
+[ipa_base.cpp#L1255-L1283](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1255-L1283)).
+Values are clipped to the 16-bit range, so brightness ±0.2 lifts blacks or
+crushes shadows. It is a level shift after gamma, not exposure. Before that,
+the HQ tuning enables **adaptive contrast enhancement** (`ce_enable: 1`,
+[imx477.json#L645](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L645)), with
+defaults from [contrast.cpp#L41-L58](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L41-L58):
+- the 1 % histogram point is moved towards 1.5 % of full scale (by at most 500
+  of 65536);
+- the 95 % point is moved towards 95 % of full scale (by at most 2000);
+- the median stays put
+  ([#L99-L141](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/contrast.cpp#L99-L141)).
+
+The UI cannot turn this off.
+
+**Saturation:** the CCM chosen for the current colour temperature (6 matrices
+from 2850 K to 7600 K in the HQ tuning) is converted to Y/Cb/Cr, Cb and Cr are
+multiplied by the saturation, and the result is converted back
+([ccm.cpp#L130-L145](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/ccm.cpp#L130-L145),
+[#L149-L182](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/ccm.cpp#L149-L182)). 0 gives greyscale; luma is
+unchanged.
+
+**Sharpness:** for user strength *s*, the ISP receives strength = 1.0 × *s* /
+m, limit = 0.5 × √*s* / m and threshold = 0.75 × m / √*s*
+([sharpen.cpp#L52-L84](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/sharpen.cpp#L52-L84); base values from
+[imx477.json#L748-L752](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L748-L752)).
+Here m is the mode's noise factor √(binX × binY), which is 2 for our 2×2-binned
+mode ([ipa_base.cpp#L624](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L624)).
+*s* = 0 disables sharpening. Sharpening also raises bitrate and visible noise.
+
+**Denoise:** `NoiseReductionMode` maps to a Pi 4 denoise mode
+([vc4.cpp#L293-L325](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L293-L325)), which
+drives two ISP blocks
+([vc4.cpp#L454-L490](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L454-L490)):
+
+| UI | libcamera `NoiseReductionMode` | spatial denoise (SDN) | colour denoise (CDN) |
+|---|---|---|---|
+| off | Off | off | off |
+| minimal | Minimal | on | off |
+| fast / auto | Fast | on | fast |
+| high quality | HighQuality | on | high quality |
+| (not offered) | ZSL | on | high quality |
+
+How the denoise blocks are driven:
+- SDN's thresholds come from the sensor noise model × `deviation` 3.2, with
+  `strength` 0.75 (defaults; the HQ tuning's `rpi.sdn` section is empty)
+  ([sdn.cpp#L38-L68](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/sdn.cpp#L38-L68)).
+- The noise model scales with √(analogue gain) / mode factor
+  ([noise.cpp#L68-L76](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/noise.cpp#L68-L76)), so denoise
+  strengthens automatically at high gain.
+- **"auto" is Picamera2's video default, Fast**
+  ([picamera2.py#L953-L957](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L953-L957)). The server sends it
+  explicitly, so switching back to auto from another mode takes effect.
+- Fast colour denoise uses the ISP's second output. When the application does
+  not use it, libcamera configures it internally at a quarter of the main size
+  ([pipeline vc4.cpp#L680-L712](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/pipeline/rpi/vc4/vc4.cpp#L680-L712)).
+  This app uses that output for the H.264 stream (1440×1080, not a quarter of
+  2028×1520), and how fast CDN behaves then is not documented. Compare
+  off / fast / high quality at high gain on the Pi.
+
+**In the UI:**
+- Each control has an ⓘ popup with the above in short form, and the Image
+  section has an overview popup.
+- A line under the denoise select says what the selected mode switches on.
+
 ---
 
 ## 4. IPC: Go ↔ helper
@@ -711,7 +793,8 @@ taken from the client.
   its limits (§3.6), and **Lock current**.
 - The raw **Focus** value (`FocusFoM`, §3.5).
 - ⓘ info popups for focus, exposure, frame rate, shutter, gain, EV, metering,
-  profiles, actual values, lux (§3.7) and metering with zone maps (§3.8). EV, metering and profile are disabled in manual
+  profiles, actual values, lux (§3.7), metering with zone maps (§3.8) and the
+  image controls including denoise (§3.9). EV, metering and profile are disabled in manual
   mode.
 - **Capture** button: a snapshot without interrupting the stream; the
   browser downloads the JPEG.

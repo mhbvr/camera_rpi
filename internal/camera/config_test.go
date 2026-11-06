@@ -110,8 +110,8 @@ func TestControlMap(t *testing.T) {
 	if _, ok := m["ColourGains"]; ok {
 		t.Fatal("ColourGains with auto WB")
 	}
-	if _, ok := m["NoiseReductionMode"]; ok {
-		t.Fatal("denoise auto should not set the control")
+	if m["NoiseReductionMode"] != 1 {
+		t.Fatalf("denoise auto must send Fast (1), got %v", m["NoiseReductionMode"])
 	}
 	fd := m["FrameDurationLimits"].([]int)
 	if fd[0] != 33333 || fd[1] != 33333 {
