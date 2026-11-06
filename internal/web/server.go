@@ -3,6 +3,7 @@ package web
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -115,6 +116,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	if c, ok := r.Context().Value(connKey{}).(net.Conn); ok {
+		if tc, ok := c.(*tls.Conn); ok {
+			c = tc.NetConn()
+		}
 		if tc, ok := c.(*net.TCPConn); ok {
 			_ = tc.SetWriteBuffer(256 << 10) // keep backlog in the hub, where it can be dropped
 		}

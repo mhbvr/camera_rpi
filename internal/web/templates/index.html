@@ -23,10 +23,11 @@
     </div>
     <p id="nocodec" class="warning" hidden>
       This browser cannot decode the stream: WebCodecs is only available on HTTPS or
-      <code>http://localhost</code>. Use an SSH tunnel
+      <code>http://localhost</code>. Start camweb with HTTPS
+      (<code>make cert</code>, then <code>-tls-cert server.crt -tls-key server.key</code>,
+      and install <code>ca.crt</code> in your browser), or use an SSH tunnel
       (<code>ssh -L 8080:localhost:8080 pi@raspberrypi</code>, then open
-      <code>http://localhost:8080</code>), or in Chrome/Edge add this address under
-      <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>.
+      <code>http://localhost:8080</code>).
     </p>
   </section>
 

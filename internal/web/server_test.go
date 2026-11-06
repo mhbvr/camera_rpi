@@ -27,6 +27,33 @@ func newTestServer(t *testing.T) (*httptest.Server, *stream.Hub, *camera.Manager
 	return ts, hub, mgr
 }
 
+func TestStreamOverTLS(t *testing.T) {
+	hub := stream.NewHub(8)
+	logger := log.New(io.Discard, "", 0)
+	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger})
+	ts := httptest.NewUnstartedServer(New(mgr, hub, logger).Handler())
+	ts.Config.ConnContext = ConnContext
+	ts.EnableHTTP2 = true
+	ts.StartTLS()
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/stream", nil)
+	res, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.ProtoMajor != 2 {
+		t.Errorf("want HTTP/2 over TLS, got %s", res.Proto)
+	}
+	h := make([]byte, stream.HeaderSize)
+	if _, err := io.ReadFull(res.Body, h); err != nil || h[0] != stream.TypeEvent {
+		t.Fatalf("first message: %v type %d", err, h[0])
+	}
+}
+
 func TestIndexAndStatic(t *testing.T) {
 	ts, _, _ := newTestServer(t)
 	for _, p := range []string{"/", "/static/app.js", "/static/player.js", "/static/style.css"} {

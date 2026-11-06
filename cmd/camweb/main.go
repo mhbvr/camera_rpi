@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"log"
@@ -33,9 +34,24 @@ func main() {
 		python     = flag.String("python", "python3", "Python interpreter for the embedded helper")
 		hflip      = flag.Bool("hflip", false, "flip the image horizontally")
 		vflip      = flag.Bool("vflip", false, "flip the image vertically (with -hflip: rotate 180°)")
+		tlsCert    = flag.String("tls-cert", "", "serve HTTPS with this certificate (PEM); see `make cert`")
+		tlsKey     = flag.String("tls-key", "", "private key (PEM) for -tls-cert")
 	)
 	flag.Parse()
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds)
+
+	// Load the certificate up front so a bad path fails at startup.
+	var tlsConfig *tls.Config
+	if (*tlsCert == "") != (*tlsKey == "") {
+		logger.Fatal("-tls-cert and -tls-key must be given together")
+	}
+	if *tlsCert != "" {
+		pair, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			logger.Fatalf("TLS: %v", err)
+		}
+		tlsConfig = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
+	}
 
 	if *runtimeDir == "" {
 		if x := os.Getenv("XDG_RUNTIME_DIR"); x != "" {
@@ -117,10 +133,18 @@ func main() {
 		Handler:           web.New(mgr, hub, logger).Handler(),
 		ConnContext:       web.ConnContext,
 		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig:         tlsConfig,
 	}
 	go func() {
-		logger.Printf("listening on %s", *listen)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		var err error
+		if tlsConfig != nil {
+			logger.Printf("listening on %s (HTTPS)", *listen)
+			err = srv.ListenAndServeTLS("", "") // certificate is in TLSConfig
+		} else {
+			logger.Printf("listening on %s (HTTP; WebCodecs needs HTTPS or localhost, see -tls-cert)", *listen)
+			err = srv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatal(err)
 		}
 	}()

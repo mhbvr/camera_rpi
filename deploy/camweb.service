@@ -12,6 +12,8 @@ User=pi
 SupplementaryGroups=video
 WorkingDirectory=/home/pi/camweb
 ExecStart=/home/pi/camweb/camweb -listen :8080 -data /home/pi/camweb/data -runtime-dir /run/camweb
+# HTTPS (see `make cert` / `make deploy-cert`): replace ExecStart above with
+# ExecStart=/home/pi/camweb/camweb -listen :8443 -data /home/pi/camweb/data -runtime-dir /run/camweb -tls-cert /home/pi/camweb/server.crt -tls-key /home/pi/camweb/server.key
 RuntimeDirectory=camweb
 Restart=on-failure
 RestartSec=2
