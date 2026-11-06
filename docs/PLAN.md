@@ -54,20 +54,28 @@ spawned, supervised and auto-restarted. Everything also runs without a Pi using
 2. **`internal/proto`** (M): shared protocol types.
    - `VideoHeader` (32 B) encode/decode, `ReadVideoMsg(r) (Msg, error)` with
      reuse of a pooled buffer, max payload guard (8 MiB).
-   - Ctl types: `Request{ID, Cmd, Args json.RawMessage}`,
-     `Response{ID, OK, Result, Error}`, `Event{Event, Data}`, `Hello`,
-     `ConfigureArgs`, `StreamStart`, … mirroring PROTOCOL.md.
+   - JSON-RPC 2.0 types (about 100 lines, no library):
+     `Request{JSONRPC, ID, Method, Params json.RawMessage}`,
+     `Response{JSONRPC, ID, Result json.RawMessage, Error *RPCError}`,
+     `Notification{JSONRPC, Method, Params}`, `RPCError{Code, Message, Data}`
+     plus the error-code constants from PROTOCOL §3.1. Decoding an incoming
+     message tells a response (has `id` and `result`/`error`) from a
+     notification (has `method`, no `id`).
+   - Typed params/results: `Hello`, `ConfigureParams`, `SnapshotParams`,
+     `StreamStart`, … mirroring PROTOCOL.md.
    - Line reader with a 1 MiB limit (`bufio.Reader` + manual limit).
-   - Tests: round-trip encode/decode, truncated input, oversize rejection.
+   - Tests: round-trip encode/decode, truncated input, oversize rejection,
+     error objects, response vs notification classification.
 3. **`internal/helper`** (L)
    - `Listener`: creates the runtime dir, removes stale sockets, listens on
      `ctl.sock` and `video.sock` (chmod 0600), and accepts pairs → `Session`.
    - `Session`:
-     - `Call(ctx, cmd string, args any, result any) error`: assigns the id,
-       writes the line under a mutex, waits on a per-id channel. Context
-       timeout.
-     - reader goroutine for ctl: routes responses by id and events to
-       `Events() <-chan proto.Event`.
+     - `Call(ctx, method string, params any, result any) error`: assigns the
+       id, writes the JSON-RPC request line under a mutex, waits on a per-id
+       channel, and turns an `error` object into a Go `*proto.RPCError`.
+       Context timeout.
+     - reader goroutine for ctl: routes responses by id and notifications to
+       `Notifications() <-chan proto.Notification`.
      - reader goroutine for video: `Video() <-chan proto.VideoMsg`, or a
        callback into the hub (avoids one copy).
      - `Done() <-chan struct{}`, `Err()`: closing either connection ends the
@@ -80,8 +88,8 @@ spawned, supervised and auto-restarted. Everything also runs without a Pi using
    - Tests use an in-process fake helper (goroutine speaking the protocol over
      real sockets in `t.TempDir()`).
 4. **`helper/camhelper.py` v1** (L): see "Helper internals" below.
-   Commands: `hello`, `configure` (fixed or arg-driven), `stop`,
-   `shutdown`; events: `state`, `stats`; video: `stream_start`, AUs.
+   JSON-RPC methods: `configure` (fixed or param-driven), `stop`, `shutdown`;
+   notifications: `hello`, `state`, `stats`; video: `stream_start`, AUs.
 5. **`cmd/fakecam`** (M): Go implementation of the helper side for dev/CI.
    - Reads a `.h264` Annex-B file (needs a small AU splitter: `internal/h264`
      `SplitAnnexB` — used **only** by fakecam), loops it at the configured fps,
@@ -100,7 +108,7 @@ spawned, supervised and auto-restarted. Everything also runs without a Pi using
      Publish; a new subscriber starts at a key; a session reset.
 8. **`internal/camera` (minimal)** (S): `Manager` that, on every new session,
    sends a hard-coded default `configure`, and forwards video to the hub and
-   state events to the hub (as browser events).
+   `state` notifications to the hub (as browser events).
 9. **`internal/web` (minimal)** (M): `GET /`, `/static/*` (embed), `GET /stream`
    (subscribe, set headers, write loop with `http.ResponseController`
    `Flush` + `SetWriteDeadline`). Small `SetWriteBuffer` via `ConnContext`.
@@ -119,10 +127,12 @@ main()
  ├─ connect ctl, video (retry 10 s)
  ├─ cam = Camera()                      # wraps Picamera2, holds cam_lock
  ├─ send hello
- └─ CtlLoop (main thread): read lines → dispatch
-       quick cmds (set_controls)         → handled inline
-       camera cmds (configure, snapshot, set_encoder, stop)              
-                                         → worker thread, guarded by cam_lock (busy if held)
+ └─ RpcLoop (main thread): read lines → parse JSON-RPC 2.0 → dispatch table {method: handler}
+       quick methods (set_controls)      → handled inline
+       camera methods (configure, snapshot, set_encoder, stop)
+                                         → worker thread, guarded by cam_lock (-32001 busy if held)
+       reply(id, result) / reply_error(id, code, message, data) / notify(method, params)
+                                         # one write lock for ctl.sock
 SocketOutput(picamera2.outputs.Output)
    outputframe(frame, keyframe=True, timestamp=None, *a, **kw)
        → video_sock.sendall(pack_header(...) + frame)   # direct write, no queue
@@ -130,7 +140,8 @@ post_callback(request)                   # metadata sampler, rate-limited to met
 StillWorker                              # thread (or subprocess if M0 says so): encode JPEG from the copied main buffer
 ```
 - Every exception in a command → error response; unhandled exception in a
-  thread → `error` event and exit(1) (the supervisor restarts).
+  thread → `error` notification and exit(1) (the supervisor restarts).
+  Errors map to the JSON-RPC codes in PROTOCOL §3.1.
 - SIGTERM → close the camera cleanly.
 - No global mutable state outside `Camera`. Wire framing is in one function
   (`pack_header`), mirroring `internal/proto`.
@@ -174,7 +185,8 @@ StillWorker                              # thread (or subprocess if M0 says so):
    - Manager serialises Apply/Capture calls with a mutex (helper `busy` should
      never happen).
 5. **Helper commands** (M): `configure` fully arg-driven, `set_controls`
-   (whitelist = names in `camera_controls`), `set_encoder`, `metadata` events
+   (whitelist = names in `camera_controls`), `set_encoder`, `metadata`
+   notifications
    via `post_callback`.
 6. **HTTP API** (S): `GET /api/config`, `POST /api/config` (partial, the
    only settings endpoint), `POST /api/config/reset`; JSON errors

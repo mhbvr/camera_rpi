@@ -10,8 +10,8 @@ against it.
 
 - Two **Unix domain sockets, SOCK_STREAM**, created by the **server**
   (listener, mode 0600):
-  - `ctl.sock`: control, UTF-8 **JSON lines** (one JSON object per line, `\n`
-    terminated, max 1 MiB per line).
+  - `ctl.sock`: control, **JSON-RPC 2.0** messages, UTF-8, one JSON object
+    per line (`\n` terminated, max 1 MiB per line), §3.
   - `video.sock`: binary video messages (§4).
 - The helper is started as
   `camhelper --ctl <path> --video <path> [--log-level info]`
@@ -29,58 +29,87 @@ against it.
 helper                                   server
   │── connect ctl.sock ──────────────────▶│
   │── connect video.sock ────────────────▶│
-  │── {"event":"hello", ...} ────────────▶│  check proto version
-  │◀────────── {"id":1,"cmd":"configure",...}
-  │── {"id":1,"ok":true,...} ────────────▶│
+  │── notification hello ────────────────▶│  check proto version
+  │◀──────── request id=1 configure ──────│
+  │── result id=1 ───────────────────────▶│
   │== video: stream_start, AU, AU, … ═══▶│
-  │◀────────── {"id":2,"cmd":"set_controls",...}
-  │── {"id":2,"ok":true} ────────────────▶│
-  │── {"event":"metadata",...} (2 Hz) ───▶│
-  │◀────────── {"id":3,"cmd":"shutdown"}
-  │── {"id":3,"ok":true} and exit ───────▶│
+  │◀──────── request id=2 set_controls ───│
+  │── result id=2 ───────────────────────▶│
+  │── notification metadata (2 Hz) ──────▶│
+  │◀──────── request id=3 shutdown ───────│
+  │── result id=3, then exit ────────────▶│
 ```
 Until the first successful `configure`, the helper is **idle**: the camera is
 opened, not started, and no video is sent.
 
 ## 3. Control channel (`ctl.sock`)
 
-### 3.1 Message shapes
-```json
-// server → helper: request
-{"id": 7, "cmd": "set_controls", "args": { ... }}
-// helper → server: response (exactly one per request, same id)
-{"id": 7, "ok": true, "result": { ... }}
-{"id": 7, "ok": false, "error": {"code": "invalid_args", "message": "..."}}
-// helper → server: event (no id), any time
-{"event": "metadata", "data": { ... }}
-```
-- `id`: positive integer chosen by the server. Responses can come **out of
-  order** (a snapshot's JPEG encode must not block `set_controls`), so the server matches
-  them by id.
-- Requests that touch the camera configuration (`configure`, `snapshot`,
-  `set_encoder`, `stop`) run **one at a time** inside the
-  helper. If another is already running, the helper either queues it or
-  replies `busy`. v1: **reply `busy`**; the server serialises anyway.
-- Error codes: `invalid_args`, `busy`, `not_configured`, `camera_error`,
-  `io_error`, `unsupported`, `internal`.
+### 3.1 Message format: JSON-RPC 2.0
+The control channel uses **[JSON-RPC 2.0](https://www.jsonrpc.org/specification)**
+unchanged, framed as **one JSON object per line** (newline-delimited; JSON
+encoders on both sides emit single-line JSON by default).
 
-### 3.2 Events
-| event | data | when |
+```jsonc
+// server → helper: request
+{"jsonrpc": "2.0", "id": 7, "method": "set_controls", "params": { ... }}
+// helper → server: success response (exactly one per request, same id)
+{"jsonrpc": "2.0", "id": 7, "result": { ... }}
+// helper → server: error response
+{"jsonrpc": "2.0", "id": 7, "error": {"code": -32602, "message": "ExposureTime out of range", "data": {"field": "ExposureTime"}}}
+// helper → server: notification (no id, never answered), any time
+{"jsonrpc": "2.0", "method": "metadata", "params": { ... }}
+```
+- **Roles:** the server sends requests; the helper sends responses and
+  **notifications** (the "events" in this document). The server never sends
+  notifications in v1, and the helper never sends requests.
+- `id`: a positive integer chosen by the server. Responses can come **out of
+  order** (a snapshot's JPEG encode must not block `set_controls`), so the
+  server matches them by id.
+- `params` is always a JSON **object** (named parameters). It is omitted for
+  methods without parameters. A method that returns nothing returns
+  `"result": {}`.
+- **Batches** (JSON arrays) are not used. The helper answers an array with
+  `-32600 Invalid Request`.
+- Methods that touch the camera configuration (`configure`, `snapshot`,
+  `set_encoder`, `stop`) run **one at a time** inside the helper. If another
+  is already running, the helper replies with the `busy` error (the server
+  serialises them anyway).
+- Implementation: there is no library on either side. The Go side is about
+  100 lines in `internal/proto` (Go's `net/rpc/jsonrpc` speaks JSON-RPC 1.0,
+  so it isn't used). The Python side is a small dispatch table.
+
+**Error codes** (standard codes plus our range from the spec's
+`-32000…-32099` implementation-defined block):
+
+| code | name | meaning |
+|---|---|---|
+| -32700 | Parse error | invalid JSON |
+| -32600 | Invalid Request | not a valid request object (or a batch) |
+| -32601 | Method not found | unknown or unsupported method |
+| -32602 | Invalid params | bad or out-of-range params; `data.field` names the field |
+| -32603 | Internal error | unexpected exception in the helper |
+| -32001 | busy | another camera operation is running |
+| -32002 | not_configured | needs a successful `configure` first |
+| -32003 | camera_error | libcamera/Picamera2 failure |
+| -32004 | io_error | file or socket I/O failure (for example writing the snapshot) |
+
+### 3.2 Notifications (helper → server)
+| method | params | when |
 |---|---|---|
 | `hello` | see §3.4 | first message on connect |
 | `state` | `{"state": "idle"\|"starting"\|"streaming"\|"reconfiguring"\|"error", "detail": "..."}` | on every change |
 | `metadata` | `{"ExposureTime": 8000, "AnalogueGain": 2.1, "DigitalGain": 1.0, "ColourGains": [1.8, 1.5], "ColourTemperature": 4800, "Lux": 320.5, "FrameDuration": 33333, "FocusFoM": 1234, "SensorTimestamp": 123456789000}` (keys present when available) | ~2 Hz while streaming (`metadata_hz` in configure) |
 | `stats` | `{"fps": 30.0, "frames": 12345}` | 1 Hz |
-| `error` | `{"code": "...", "message": "..."}` | asynchronous errors (for example the encoder failed) |
+| `error` | `{"code": -32003, "message": "..."}` | asynchronous errors (for example the encoder failed) |
 
-### 3.3 Commands
+### 3.3 Methods
 
 #### `configure`
 Configures the pipeline and starts streaming. If it is already running, the
 helper stops, reconfigures and restarts (the video channel gets a new
 `stream_start`).
 ```json
-{"id":1,"cmd":"configure","args":{
+{"jsonrpc":"2.0","id":1,"method":"configure","params":{
   "sensor":  {"size": [2028,1520], "bit_depth": 12},
   "main":    {"size": [2028,1520], "format": "YUV420"},
   "lores":   {"size": [1440,1080], "format": "YUV420"},
@@ -90,7 +119,7 @@ helper stops, reconfigures and restarts (the video channel gets a new
   "encoder": {"codec": "h264", "bitrate": 6000000, "iperiod": 30},   // H.264 profile fixed: high
   "metadata_hz": 2
 }}
-→ {"id":1,"ok":true,"result":{
+→ {"jsonrpc":"2.0","id":1,"result":{
      "applied": { ...same shape, with the actual sizes/strides after alignment... },
      "session": 3
 }}
@@ -98,9 +127,9 @@ helper stops, reconfigures and restarts (the video channel gets a new
 
 #### `set_controls`
 Applies libcamera controls live. Names and values are libcamera's (the server
-does the mapping). Unknown control → `invalid_args`.
+does the mapping). Unknown control → `-32602 Invalid params`.
 ```json
-{"id":2,"cmd":"set_controls","args":{"controls":{
+{"jsonrpc":"2.0","id":2,"method":"set_controls","params":{"controls":{
   "AeEnable": false, "ExposureTime": 10000, "AnalogueGain": 2.0,
   "AwbEnable": true, "AwbMode": 0, "ColourGains": [1.8,1.5],
   "ExposureValue": 0.0, "AeMeteringMode": 0, "AeExposureMode": 0,
@@ -108,7 +137,7 @@ does the mapping). Unknown control → `invalid_args`.
   "NoiseReductionMode": 1,
   "FrameDurationLimits": [20000,20000]
 }}}
-→ {"id":2,"ok":true}
+→ {"jsonrpc":"2.0","id":2,"result":{}}
 ```
 Enum controls are sent as **integers** (libcamera enum values), so the helper
 needs no name tables. The names come from `hello.controls[*].values`.
@@ -117,18 +146,19 @@ needs no name tables. The names come from `hello.controls[*].values`.
 Restarts only the encoder with new parameters. The video channel gets a new
 `stream_start` and starts with an IDR.
 ```json
-{"id":3,"cmd":"set_encoder","args":{"bitrate":4000000,"iperiod":30}}
+{"jsonrpc":"2.0","id":3,"method":"set_encoder","params":{"bitrate":4000000,"iperiod":30}}
+→ {"jsonrpc":"2.0","id":3,"result":{"session": 4}}
 ```
 
 #### `snapshot`
 Captures one frame from the running `main` stream as JPEG **without
 interrupting video**.
 ```json
-{"id":4,"cmd":"snapshot","args":{
+{"jsonrpc":"2.0","id":4,"method":"snapshot","params":{
   "path": "/home/pi/data/captures/IMG_20261106_134501",   // no extension; helper appends .jpg
   "quality": 95
 }}
-→ {"id":4,"ok":true,"result":{
+→ {"jsonrpc":"2.0","id":4,"result":{
   "file": {"path": ".../IMG_20261106_134501.jpg", "size": 1834221, "width": 2028, "height": 1520},
   "metadata": { ...frame metadata... },
   "timing_ms": {"capture": 35, "encode": 180}
@@ -138,17 +168,17 @@ Rules:
 - The helper writes `<path>.jpg.tmp`, then renames it to `<path>.jpg`.
 - The response is sent **after** the file is complete.
 - The `path` comes from the server only (never from a browser client).
-- If not streaming → `not_configured`.
+- If not streaming → `-32002 not_configured`.
 
 #### `stop`
-Stops streaming and returns to idle (the camera stays open).
+Stops streaming and returns to idle (the camera stays open). No params; result `{}`.
 
 #### `shutdown`
-Respond, release the camera, exit 0.
+No params. Respond with `{}`, release the camera, exit 0.
 
 ### 3.4 `hello`
 ```json
-{"event":"hello","data":{
+{"jsonrpc":"2.0","method":"hello","params":{
   "proto": 1,
   "impl": "picamera2", "impl_version": "0.3.27", "libcamera": "v0.5.x",
   "camera": {
@@ -216,8 +246,8 @@ offset size field
 ## 5. Versioning
 - `hello.proto` is an integer. The server refuses (logs and restarts) a helper
   whose major `proto` differs from its own.
-- New optional commands, args and event fields can be added without a version
-  bump. Receivers **must ignore unknown fields**.
+- New optional methods, params and notification fields can be added without
+  a version bump. Receivers **must ignore unknown fields**.
 
 ## 6. Future extensions (reserved, not in v1)
 - **`capture_full`**: a full sensor resolution (4056×3040) capture by
@@ -227,7 +257,8 @@ offset size field
 - **Raw/DNG**: `configure.raw` plus `snapshot.raw` to also save a DNG.
 - **Raw frame sharing (shared memory):** command `share_frames {"stream":"lores","slots":4}`.
   The helper replies with a `memfd` passed via `SCM_RIGHTS` on `ctl.sock`, and
-  sends `frame_ready {"slot":n,"seq":…}` events. The server acknowledges with
-  `frame_release {"slot":n}`. For processing (OpenCV and similar) without
+  sends `frame_ready {"slot":n,"seq":…}` notifications. The server answers with
+  `frame_release {"slot":n}` (this would be the first server → helper
+  notification). For processing (OpenCV and similar) without
   copying.
 - `capture_burst`, `start_recording` (to a file on the Pi), MJPEG codec.

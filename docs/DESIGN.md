@@ -1,4 +1,4 @@
-# camera_rpi — Design Document (v0.4, for review)
+# camera_rpi — Design Document (v0.5, for review)
 
 A web application for a Raspberry Pi 4 with the HQ Camera (Sony IMX477):
 
@@ -40,6 +40,10 @@ Related documents:
   endpoint, no capabilities/status/time endpoints, no presets, and a simpler
   browser player (no latency estimate, no client-side frame skipping, no
   pausing in hidden tabs, fixed-interval reconnect).
+- v0.5 review: the control channel uses **JSON-RPC 2.0** (standard spec, no
+  library). The video channel keeps its length-prefixed frames, and the browser
+  stream keeps `fetch` with the 16-byte header (both decided after looking at
+  existing standards, §4.2 and §5.1).
 - The H.264 splitter and its extra one-frame delay are gone. The encoder
   hands over whole frames.
 - IPC between Go and the helper uses **Unix domain sockets** (§4).
@@ -106,7 +110,7 @@ Related documents:
 │  │  control loop  ◀──────────────────┼─────────────┼──│  ctl JSON-RPC │        │ │ │
 │  │  (configure, set_controls,        │   ctl.sock  │  └──────▲───────┘        │ │ │
 │  │   snapshot)                ───────┼─────────────┼─▶ events (state, metadata) │ │
-│  └──────────────────────────────────┘ (JSON lines) │  ┌──────┴───────┐        │ │ │
+│  └──────────────────────────────────┘(JSON-RPC 2.0)│  ┌──────┴───────┐        │ │ │
 │            ▲ spawned + supervised by Go             │  │camera.Manager│ config │ │ │
 │            └────────────────────────────────────────┼──│ policy, diff,│ persist│ │ │
 │                                                     │  │ state        │        │ │ │
@@ -235,10 +239,22 @@ figures; M1 measures the real IPC latency). **Latency and throughput do not
 decide the choice at our load; robustness and simplicity do.**
 
 **Decision: Unix domain sockets (SOCK_STREAM), two connections:**
-- `ctl.sock`: JSON lines for requests, replies and events. Human-readable and
+- `ctl.sock`: **JSON-RPC 2.0**, one message per line (requests, responses,
+  and notifications for events). Human-readable and
   scriptable.
 - `video.sock`: length-prefixed binary frames. A large still never delays a
   control reply, because stills don't go over IPC at all.
+
+**Why not an existing protocol on these sockets?**
+- Control: **JSON-RPC 2.0** is used as-is (newline-delimited). gRPC (protobuf
+  plus grpcio on the Pi) and HTTP over the Unix socket (pushing events needs
+  SSE) cost more for no gain.
+- Video: a raw Annex-B byte stream (Picamera2 `FileOutput`) is standard, but
+  Go would have to find frame boundaries by waiting for the next start code
+  (**+1 frame of latency**), and timestamps would be lost. `SOCK_SEQPACKET`
+  hits message-size limits with large I-frames. RTP or MPEG-TS need muxing in
+  Python and demuxing in Go. A 32-byte length-prefixed header is the least
+  code and adds no latency.
 
 **Shared memory is deferred** until raw frames need to cross the boundary (for
 example future OpenCV processing in Go, or 12 MP YUV at 10 fps ≈ 185 MB/s).
@@ -279,6 +295,13 @@ with WebCodecs.**
   (seconds of latency), MSE/fMP4 (more buffering, needs a muxer), WebRTC
   (best on lossy links, but the large `pion` dependency plus ICE/STUN/TURN; it
   is the upgrade path).
+- **Existing alternatives reviewed and rejected for the prototype (v0.5):**
+  WebSocket (standard framing, but there's no server in Go's standard library:
+  it needs `x/net/websocket` or hand-written code); WebRTC with WHEP signalling
+  via `pion` (best on lossy links, but heavy dependencies and NAT/ICE setup);
+  the mediamtx media server (WebRTC/LL-HLS/RTSP; an extra binary, and its own
+  camera source has no still capture). **Decision: `fetch` + a 16-byte
+  header, zero dependencies.** WebRTC remains the upgrade path.
 - WebCodecs requires a **secure context** (HTTPS or `localhost`). At this
   stage the app serves **plain HTTP only**. Ways to get a secure context
   without TLS in the app:
