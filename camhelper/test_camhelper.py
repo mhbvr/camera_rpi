@@ -106,7 +106,8 @@ class TuningTest(unittest.TestCase):
         self.assertEqual(t["exposure_modes"]["long"]["shutter"][-1], 120000)
         self.assertEqual(t["exposure_modes"]["normal"]["gain"][-1], 16.0)
         self.assertEqual(t["max_digital_gain"], 4.0)
-        self.assertIn("spot", t["metering_modes"])
+        self.assertEqual(t["metering_modes"]["spot"][:3], [2, 1, 1])
+        self.assertEqual(len(t["metering_modes"]["matrix"]), 15)
         self.assertIsNone(camhelper.read_tuning(""))
 
 

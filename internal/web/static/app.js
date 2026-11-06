@@ -207,6 +207,10 @@ function fillCameraInfo() {
   const t = camera?.tuning;
   if (!t) return;
   fill('tuning-file', `(<code>${t.file}</code>)`);
+  if (t.metering_modes && !Array.isArray(t.metering_modes)) {
+    const maps = meteringMaps(t.metering_modes, config?.controls?.metering);
+    if (maps) fill('metering-zones', `<div class="zone-maps">${maps}</div><p class="muted">Numbers are zone weights; darker = counts more.</p>`);
+  }
   const yt = (t.y_target || []).filter((_, i) => i % 2 === 1);
   if (yt.length) fill('ev-cap', '+' + Math.log2(0.9 / Math.max(...yt)).toFixed(1));
   const order = ['normal', 'short', 'long'];
@@ -218,6 +222,28 @@ function fillCameraInfo() {
   });
   fill('profile-table', `<table><tr><th>profile</th><th>shutter steps</th><th>gain steps</th></tr>${rows.join('')}</table>
     <p>Digital gain can add up to ×${t.max_digital_gain} beyond the sensor's analogue maximum.</p>`);
+}
+
+// Pi 4 AGC metering zones (Raspberry Pi Camera Algorithm and Tuning Guide,
+// §5.9.3, Figure 9) on a 5-row × 7-column grid:
+// [zone, rowStart, rowEnd, colStart, colEnd] (CSS grid lines).
+const METERING_ZONES = [
+  [11, 1, 2, 1, 2], [9, 1, 2, 2, 7], [12, 1, 2, 7, 8],
+  [7, 2, 5, 1, 2], [5, 2, 5, 2, 3], [3, 2, 3, 3, 6], [1, 3, 4, 3, 4], [0, 3, 4, 4, 5],
+  [2, 3, 4, 5, 6], [4, 4, 5, 3, 6], [6, 2, 5, 6, 7], [8, 2, 5, 7, 8],
+  [13, 5, 6, 1, 2], [10, 5, 6, 2, 7], [14, 5, 6, 7, 8],
+];
+const METERING_NAMES = { centre: 'centre-weighted', spot: 'spot', matrix: 'matrix' }; // UI -> tuning
+
+function meteringMaps(modes, selected) {
+  return Object.entries(METERING_NAMES).map(([ui, name]) => {
+    const w = modes[name];
+    if (!w || w.length !== METERING_ZONES.length) return '';
+    const max = Math.max(...w, 1);
+    const cells = METERING_ZONES.map(([z, r1, r2, c1, c2]) =>
+      `<div style="grid-area:${r1}/${c1}/${r2}/${c2};--w:${(w[z] / max).toFixed(2)}" title="zone ${z}: weight ${w[z]}">${w[z]}</div>`).join('');
+    return `<figure class="zones${ui === selected ? ' selected' : ''}"><div class="zone-grid">${cells}</div><figcaption>${ui}</figcaption></figure>`;
+  }).join('');
 }
 
 // One-line description of the selected profile under the select.

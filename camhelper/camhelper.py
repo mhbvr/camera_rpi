@@ -568,7 +568,9 @@ def read_tuning(model):
     return {
         "file": name,
         "exposure_modes": modes,
-        "metering_modes": list((ch.get("metering_modes") or {}).keys()),
+        # name -> per-zone weights (15 zones on Pi 4, see DESIGN.md §3.8)
+        "metering_modes": {k: list((v or {}).get("weights") or [])
+                           for k, v in (ch.get("metering_modes") or {}).items()},
         "y_target": list(ch.get("y_target") or []),
         "max_digital_gain": float(ch.get("max_digital_gain", 4.0)),
     }

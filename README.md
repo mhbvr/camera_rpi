@@ -136,6 +136,9 @@ The ⓘ button next to it explains the same; details and source links are in
   "long" profile at ≤ 8 fps, or switch to manual.
 - **Manual mode** uses shutter and gain as set. EV, metering and profile are
   disabled.
+- **Metering** chooses which of the 15 Pi 4 zones count when auto exposure
+  judges brightness: centre-weighted, spot or matrix. The ⓘ popup shows the
+  zone weights.
 
 Each control has an ⓘ popup; details with source links are in
 [DESIGN.md §3.6](docs/DESIGN.md).

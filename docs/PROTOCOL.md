@@ -214,7 +214,11 @@ No params. Respond with `{}`, release the camera, exit 0.
       "short":  {"shutter": [100, 5000, 10000, 20000, 66666],  "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
       "long":   {"shutter": [100, 10000, 30000, 60000, 120000], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]}
     },
-    "metering_modes": ["centre-weighted", "spot", "matrix"],
+    "metering_modes": {
+      "centre-weighted": [3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0],
+      "spot":            [2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      "matrix":          [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    },
     "y_target": [0, 0.16, 1000, 0.165, 10000, 0.17],
     "max_digital_gain": 4.0
   }
@@ -228,7 +232,8 @@ declare what it supports.
 the tuning file libcamera uses for the sensor. libcamera's camera API does not
 expose it, so the Picamera2 helper reads `<model>.json` with
 `Picamera2.load_tuning_file()`. `shutter` is in µs; `y_target` is lux/target
-pairs. The UI uses it to explain profiles and to detect when auto exposure is
+pairs; `metering_modes` maps each mode to its per-zone weights (15 zones on
+Pi 4, layout in DESIGN.md §3.8). The UI uses it to explain profiles and to detect when auto exposure is
 at its limits (DESIGN.md §3.6).
 
 ## 4. Video channel (`video.sock`)

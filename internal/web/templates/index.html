@@ -211,13 +211,25 @@
 </div>
 <div id="info-metering" popover class="popover">
   <h3>Metering (auto only)</h3>
-  <p>Which part of the image auto exposure measures brightness in:</p>
+  <p>Decides <b>which parts of the image</b> auto exposure looks at when it judges
+    brightness. The Pi 4 splits the frame into 15 zones. Auto exposure averages
+    their brightness, each pixel counted with its zone's <b>weight</b>, and steers
+    that average to its target. Weight 0 means the zone is ignored.</p>
+  <div data-fill="metering-zones">Zone weights not available (no tuning data from the camera).</div>
   <ul>
-    <li><b>centre</b>: centre-weighted, favours the middle of the frame;</li>
-    <li><b>spot</b>: only a small central area;</li>
-    <li><b>matrix</b>: the whole frame evenly.</li>
+    <li><b>centre</b> (centre-weighted): the middle counts most, edges less,
+      corners not at all. Good default.</li>
+    <li><b>spot</b>: only a small area in the middle. Use it when the subject is
+      small and centred against a much brighter or darker background.</li>
+    <li><b>matrix</b>: the whole frame evenly (plain average).</li>
   </ul>
-  <p class="muted">Weights come from the camera tuning file.</p>
+  <p>A bright window or dark corner in a zone with weight 0 does not change the
+    exposure. Independently of metering, a histogram rule raises exposure if
+    even the brightest 2 % of pixels are dim. In manual mode metering has no
+    effect.</p>
+  <p class="muted">Zone layout from the Raspberry Pi tuning guide (Figure 9, sizes
+    approximate); weights read from the camera tuning file. Details:
+    docs/DESIGN.md §3.8</p>
   <button type="button" popovertarget="info-metering" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-profile" popover class="popover">

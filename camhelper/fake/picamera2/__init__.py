@@ -44,7 +44,11 @@ _FAKE_TUNING = {
     "target": "bcm2835",
     "algorithms": [
         {"rpi.agc": {"channels": [{
-            "metering_modes": {"centre-weighted": {}, "spot": {}, "matrix": {}},
+            "metering_modes": {
+                "centre-weighted": {"weights": [3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0]},
+                "spot": {"weights": [2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]},
+                "matrix": {"weights": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]},
+            },
             "exposure_modes": {
                 "normal": {"shutter": [100, 10000, 30000, 60000, 66666], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},
                 "short": {"shutter": [100, 5000, 10000, 20000, 66666], "gain": [1.0, 2.0, 4.0, 6.0, 16.0]},

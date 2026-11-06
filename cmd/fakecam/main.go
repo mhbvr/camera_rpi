@@ -404,7 +404,11 @@ func helloParams() proto.Hello {
 				"short":  {Shutter: []float64{100, 5000, 10000, 20000, 66666}, Gain: []float64{1, 2, 4, 6, 16}},
 				"long":   {Shutter: []float64{100, 10000, 30000, 60000, 120000}, Gain: []float64{1, 2, 4, 6, 16}},
 			},
-			MeteringModes:  []string{"centre-weighted", "spot", "matrix"},
+			MeteringModes: map[string][]float64{
+				"centre-weighted": {3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0},
+				"spot":            {2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+				"matrix":          {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+			},
 			YTarget:        []float64{0, 0.16, 1000, 0.165, 10000, 0.17},
 			MaxDigitalGain: 4,
 		},

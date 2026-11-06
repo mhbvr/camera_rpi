@@ -353,7 +353,7 @@ the profiles. The helper reads the tuning file the IPA loads for the sensor
 (`<model>.json`, for example `/usr/share/libcamera/ipa/rpi/vc4/imx477.json`)
 with Picamera2's `load_tuning_file()` / `find_tuning_algo()`
 ([picamera2.py#L264-L310](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L264-L310)) and sends the `rpi.agc`
-exposure profiles, metering mode names, `y_target` and `max_digital_gain` in
+exposure profiles, metering mode weights, `y_target` and `max_digital_gain` in
 `hello.tuning`. The server forwards them to the browser in a sticky `camera`
 event. If the file cannot be read, the profile details and the limit warning
 are not shown.
@@ -410,6 +410,72 @@ and auto white balance chooses its colour-temperature priors by lux
 ([awb.cpp#L341-L345](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/awb.cpp#L341-L345)).
 A lens much darker or brighter than the calibration lens shifts these choices
 slightly.
+
+
+### 3.8 Metering modes
+
+Metering decides **which parts of the image** auto exposure uses to judge
+brightness. It applies only in auto mode (the UI disables it in manual).
+
+**How it works (Pi 4).** The ISP collects statistics in **15 fixed zones**, laid
+out as in the Raspberry Pi tuning guide
+([Camera Algorithm and Tuning Guide §5.9.3, Figure 9](https://datasheets.raspberrypi.com/camera/raspberry-pi-camera-guide.pdf#page=33)).
+Zone sizes in the sketch are approximate:
+
+```
++----+------------------------+----+
+| 11 |           9            | 12 |
++----+----+-------------+-----+----+
+|    |    |      3      |     |    |
+|    |    +----+---+----+     |    |
+| 7  | 5  | 1  | 0 | 2  |  6  | 8  |
+|    |    +----+---+----+     |    |
+|    |    |      4      |     |    |
++----+----+-------------+-----+----+
+| 13 |           10           | 14 |
++----+------------------------+----+
+```
+
+Each metering mode is a list of 15 weights in the tuning file. libcamera
+multiplies each zone's R/G/B sums *and* its pixel count by the zone's weight
+([vc4.cpp#L251-L261](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/vc4.cpp#L251-L261)). The
+brightness Y that auto exposure drives towards its target is therefore a
+weighted pixel average
+([agc_channel.cpp#L633-L691](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/controller/rpi/agc_channel.cpp#L633-L691)):
+
+    Y = Σ wᵢ·(sum of pixels in zone i) / Σ wᵢ·(pixel count of zone i)
+
+HQ camera weights (`imx477.json`,
+[#L206-L229](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/vc4/data/imx477.json#L206-L229)),
+listed for zones 0–14:
+
+| UI | libcamera / tuning name | weights (zones 0…14) | effect |
+|---|---|---|---|
+| centre | `CentreWeighted` / `centre-weighted` | 3 3 3 · 2 2 2 2 · 1 1 1 1 · 0 0 0 0 | centre row ×3, ring ×2, edges ×1, corners ignored |
+| spot | `Spot` / `spot` | 2 1 1 · 0 … 0 | only the three small central zones |
+| matrix | `Matrix` / `matrix` | all 1 | plain whole-frame average |
+
+The `AeMeteringMode` control is mapped to these names in
+[ipa_base.cpp#L750-L755](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L750-L755)
+and applied in [#L1023-L1040](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1023-L1040).
+libcamera also has a `custom` mode, but the HQ tuning file does not define it,
+so the UI does not offer it.
+
+**Things metering does not change:**
+- **Histogram constraints** are applied after the weighted average, and on the
+  Pi 4 they count every pixel once regardless of weight (tuning guide §5.9.4).
+  The HQ tuning's default constraint mode is a lower bound: the brightest 2 % of
+  pixels must reach at least 0.3 of full scale, which can raise exposure for
+  dim scenes.
+- The **lux** estimate uses the whole frame (§3.7).
+- The limits (frame time, profile maximum) are the same in every mode (§3.6).
+
+**In the UI:**
+- The metering ⓘ popup draws the three zone maps from the weights the helper
+  reads from the tuning file (`hello.tuning.metering_modes`), with the selected
+  mode outlined.
+- The zone geometry is fixed in `internal/web/static/app.js`
+  (`METERING_ZONES`), taken from the tuning guide figure.
 
 ---
 
@@ -645,7 +711,7 @@ taken from the client.
   its limits (§3.6), and **Lock current**.
 - The raw **Focus** value (`FocusFoM`, §3.5).
 - ⓘ info popups for focus, exposure, frame rate, shutter, gain, EV, metering,
-  profiles, actual values and lux (§3.7). EV, metering and profile are disabled in manual
+  profiles, actual values, lux (§3.7) and metering with zone maps (§3.8). EV, metering and profile are disabled in manual
   mode.
 - **Capture** button: a snapshot without interrupting the stream; the
   browser downloads the JPEG.

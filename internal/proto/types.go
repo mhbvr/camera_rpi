@@ -44,8 +44,8 @@ type Hello struct {
 type Tuning struct {
 	File           string                     `json:"file"`
 	ExposureModes  map[string]ExposureProfile `json:"exposure_modes"`
-	MeteringModes  []string                   `json:"metering_modes"`
-	YTarget        []float64                  `json:"y_target"` // pairs: lux, target brightness (0..1)
+	MeteringModes  map[string][]float64       `json:"metering_modes"` // name -> per-zone weights
+	YTarget        []float64                  `json:"y_target"`       // pairs: lux, target brightness (0..1)
 	MaxDigitalGain float64                    `json:"max_digital_gain"`
 }
 
