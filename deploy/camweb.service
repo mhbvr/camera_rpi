@@ -1,0 +1,20 @@
+# systemd unit for camweb. Adjust User and paths, then:
+#   sudo cp deploy/camweb.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now camweb
+#   journalctl -u camweb -f
+[Unit]
+Description=camweb - Raspberry Pi camera web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+SupplementaryGroups=video
+WorkingDirectory=/home/pi/camweb
+ExecStart=/home/pi/camweb/camweb -listen :8080 -data /home/pi/camweb/data -runtime-dir /run/camweb
+RuntimeDirectory=camweb
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

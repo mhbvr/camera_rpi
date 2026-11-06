@@ -1,0 +1,210 @@
+package camera
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/mhbvr/camera_rpi/internal/helper"
+	"github.com/mhbvr/camera_rpi/internal/proto"
+	"github.com/mhbvr/camera_rpi/internal/stream"
+)
+
+type call struct {
+	Method string
+	Params json.RawMessage
+}
+
+// fakeCam is a minimal helper that records calls.
+type fakeCam struct {
+	mu    sync.Mutex
+	calls []call
+	ctl   net.Conn
+}
+
+func (f *fakeCam) record(m *proto.Incoming) {
+	f.mu.Lock()
+	f.calls = append(f.calls, call{m.Method, m.Params})
+	f.mu.Unlock()
+}
+
+func (f *fakeCam) last() call {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[len(f.calls)-1]
+}
+
+func (f *fakeCam) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func startFake(t *testing.T, l *helper.Listener) *fakeCam {
+	ctl, err := net.Dial("unix", l.CtlPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	video, err := net.Dial("unix", l.VideoPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCam{ctl: ctl}
+	t.Cleanup(func() { ctl.Close(); video.Close() })
+	write := func(v any) {
+		b, _ := proto.MarshalLine(v)
+		ctl.Write(b)
+	}
+	write(proto.Notification{JSONRPC: "2.0", Method: "hello", Params: json.RawMessage(`{"proto":1,"impl":"fake","camera":{"model":"imx477"}}`)})
+	go func() {
+		lr := proto.NewLineReader(ctl)
+		for {
+			line, err := lr.ReadLine()
+			if err != nil {
+				return
+			}
+			m, _ := proto.ParseIncoming(line)
+			f.record(m)
+			res := json.RawMessage(`{}`)
+			switch m.Method {
+			case proto.MethodConfigure:
+				res = json.RawMessage(`{"applied":{},"session":1}`)
+			case proto.MethodSnapshot:
+				var p proto.SnapshotParams
+				_ = json.Unmarshal(m.Params, &p)
+				_ = os.WriteFile(p.Path+".jpg", []byte("jpeg"), 0o644)
+				b, _ := json.Marshal(proto.SnapshotResult{File: proto.FileInfo{Path: p.Path + ".jpg", Size: 4, Width: 2028, Height: 1520}})
+				res = b
+			}
+			write(proto.Response{JSONRPC: "2.0", ID: m.ID, Result: res})
+		}
+	}()
+	return f
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestManagerFlow(t *testing.T) {
+	dir := t.TempDir()
+	logger := log.New(io.Discard, "", 0)
+	l, err := helper.Listen(filepath.Join(dir, "run"), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	hub := stream.NewHub(8)
+	m := NewManager(Defaults(), hub, Options{
+		ConfigPath:  filepath.Join(dir, "config.json"),
+		CapturesDir: filepath.Join(dir, "captures"),
+		HFlip:       true,
+		Log:         logger,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		s, err := l.Accept(ctx, m.OnVideo)
+		if err != nil {
+			return
+		}
+		_ = m.RunSession(ctx, s)
+	}()
+	f := startFake(t, l)
+
+	// configure with the full config
+	waitFor(t, func() bool { return f.count() >= 1 })
+	c := f.last()
+	var cp proto.ConfigureParams
+	_ = json.Unmarshal(c.Params, &cp)
+	if c.Method != proto.MethodConfigure || cp.Lores.Size != (proto.Size{1440, 1080}) || !cp.Transform.HFlip || cp.Encoder.Bitrate != 6_000_000 {
+		t.Fatalf("configure call %s %+v", c.Method, cp)
+	}
+	waitFor(t, func() bool { m.mu.RLock(); defer m.mu.RUnlock(); return m.sess != nil })
+
+	// live change → set_controls with only the changed control
+	kind, _, err := m.Apply(ctx, []byte(`{"controls":{"contrast":2}}`))
+	if err != nil || kind != ApplyLive {
+		t.Fatalf("apply live: %v %v", kind, err)
+	}
+	c = f.last()
+	var sc proto.SetControlsParams
+	_ = json.Unmarshal(c.Params, &sc)
+	if c.Method != proto.MethodSetControls || len(sc.Controls) != 1 || sc.Controls["Contrast"] != 2.0 {
+		t.Fatalf("set_controls call %s %v", c.Method, sc.Controls)
+	}
+
+	// encoder change
+	kind, _, err = m.Apply(ctx, []byte(`{"encoder":{"bitrate":3000000}}`))
+	if err != nil || kind != ApplyEncoder || f.last().Method != proto.MethodSetEncoder {
+		t.Fatalf("apply encoder: %v %v %s", kind, err, f.last().Method)
+	}
+
+	// stream size → configure
+	kind, _, err = m.Apply(ctx, []byte(`{"pipeline":{"stream_size":[640,480]}}`))
+	if err != nil || kind != ApplyReconfigure || f.last().Method != proto.MethodConfigure {
+		t.Fatalf("apply reconfigure: %v %v %s", kind, err, f.last().Method)
+	}
+
+	// invalid change is rejected and not sent
+	n := f.count()
+	if _, _, err := m.Apply(ctx, []byte(`{"controls":{"fps":500}}`)); err == nil {
+		t.Fatal("invalid fps accepted")
+	}
+	if f.count() != n {
+		t.Fatal("invalid change reached the helper")
+	}
+
+	// persisted
+	saved, err := LoadConfig(filepath.Join(dir, "config.json"))
+	if err != nil || saved.Pipeline.StreamSize != (proto.Size{640, 480}) || saved.Controls.Contrast != 2 {
+		t.Fatalf("persisted %+v %v", saved, err)
+	}
+
+	// snapshot
+	res, err := m.Snapshot(ctx, 0)
+	if err != nil || res.File.Width != 2028 {
+		t.Fatalf("snapshot %+v %v", res, err)
+	}
+	var sp proto.SnapshotParams
+	_ = json.Unmarshal(f.last().Params, &sp)
+	if sp.Quality != 95 || filepath.Dir(sp.Path) != filepath.Join(dir, "captures") {
+		t.Fatalf("snapshot params %+v", sp)
+	}
+	// a second snapshot in the same second gets a unique name
+	if _, err := m.Snapshot(ctx, 80); err != nil {
+		t.Fatal(err)
+	}
+	var sp2 proto.SnapshotParams
+	_ = json.Unmarshal(f.last().Params, &sp2)
+	if sp2.Path == sp.Path {
+		t.Fatal("snapshot name not unique")
+	}
+}
+
+func TestManagerNoCamera(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(Defaults(), stream.NewHub(4), Options{ConfigPath: filepath.Join(dir, "c.json"), Log: log.New(io.Discard, "", 0)})
+	if _, err := m.Snapshot(context.Background(), 0); err != ErrNoCamera {
+		t.Fatalf("want ErrNoCamera, got %v", err)
+	}
+	kind, cfg, err := m.Apply(context.Background(), []byte(`{"controls":{"ev":1}}`))
+	if err != nil || kind != ApplyLive || cfg.Controls.EV != 1 {
+		t.Fatalf("store-only apply: %v %v", kind, err)
+	}
+}
