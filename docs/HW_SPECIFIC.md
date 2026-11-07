@@ -91,9 +91,9 @@ Concentrated in `internal/camera/config.go` and the explanatory texts:
 | Sensor mode | 2028×1520 12-bit, 2×2 binned, full field of view, max 45.19 fps | `SensorSize`, `SensorBitDepth` |
 | Snapshot size (main) | 2028×1520 | `MainSize` |
 | Stream sizes (lores, same 4:3 aspect as main) | 1440×1080, 1024×768, 640×480 | `StreamSizes` |
-| Frame-rate limit | 40 fps (below the mode's 45.19) | `Limits.FPSMax` |
-| Gain limit | 22 (sensor analogue maximum 22.26, also checked against `hello`) | `Limits.GainMax` |
-| Exposure profiles, AWB modes, metering modes offered | those defined in `imx477.json` (no `custom`) | `ExposureModes`, `AWBModes`, `MeteringModes` |
+| Frame-rate limit | 40 fps (below the mode's 45.19) | schema field `controls.fps` (`internal/camera/schema.go`) |
+| Gain limit | 22 (sensor analogue maximum 22.26, also checked against `hello`) | schema field `controls.gain` |
+| Exposure profiles, AWB modes, metering modes offered | those defined in `imx477.json` (no `custom`) | schema fields `controls.exposure_mode`, `controls.awb_mode`, `controls.metering` |
 | Tables in HARDWARE.md (profiles, AWB ranges, metering weights, lux reference, sharpening, contrast enhancement) | from `imx477.json` | HARDWARE.md §8–§12 |
 | Manual-focus C/CS lens: the Focus readout is a focusing aid; no autofocus controls | — | UI Focus, HARDWARE.md §7 |
 
@@ -111,8 +111,10 @@ To use another Raspberry Pi camera:
    and ≤ 1920×1080 on VC4. A 16:9 camera (for example Camera Module 3, IMX708)
    needs 16:9 stream sizes; the bundled page and `/api/schema` pick them up
    automatically.
-4. Adjust `Limits` (`FPSMax` below the mode's maximum, `GainMax`,
-   `ShutterMax`) and the enum lists to what the camera's tuning file defines.
+4. Adjust the schema in `internal/camera/schema.go` (`controls.fps` below the
+   mode's maximum, `controls.gain`, `controls.shutter_us`, and the enum values)
+   to what the camera and its tuning file define. Validation, `/api/schema`
+   and the page's form all follow it.
 5. Cameras with autofocus (Camera Module 3) work with a fixed focus; autofocus
    controls (`AfMode`, `LensPosition`) would be new settings in `Config`,
    `controls.go` and the schema.

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/mhbvr/camera_rpi/internal/camera"
@@ -53,7 +54,7 @@ func New(mgr *camera.Manager, hub *stream.Hub, frames *stream.FrameHub, logger *
 		hub:    hub,
 		frames: frames,
 		log:    logger,
-		tmpl:   template.Must(template.ParseFS(templatesFS, "templates/index.html")),
+		tmpl:   template.Must(template.New("index.html").Funcs(schemaFuncs).ParseFS(templatesFS, "templates/index.html")),
 		mux:    http.NewServeMux(),
 	}
 	static, _ := fs.Sub(staticFS, "static")
@@ -103,44 +104,25 @@ func ConnContext(ctx context.Context, c net.Conn) context.Context {
 	return context.WithValue(ctx, connKey{}, c)
 }
 
-// ui holds the ranges rendered into the settings form. Validation uses
-// camera.Limits; some sliders use a narrower practical range.
-type ui struct {
-	L             any
-	StreamSizes   []proto.Size
-	Metering      []string
-	ExposureModes []string
-	AWBModes      []string
-	DenoiseModes  []string
-	ContrastMax   float64
-	SaturationMax float64
-	SharpnessMax  float64
-	BitrateMinM   float64
-	BitrateMaxM   float64
-	// MJPEG fallback bitrate range in Mbit/s
-	MJPEGBitrateMinM float64
-	MJPEGBitrateMaxM float64
+// schemaFuncs give the page template the form ranges and choices from the
+// settings schema (camera.Schema), so they always match validation. The
+// template uses narrower slider ranges in a few places (contrast, saturation,
+// sharpness, white-balance gains); those are UI choices written in the
+// template.
+var schemaFuncs = template.FuncMap{
+	"min":    func(path string) string { return fmtNum(*camera.FieldByPath(path).Min) },
+	"max":    func(path string) string { return fmtNum(*camera.FieldByPath(path).Max) },
+	"minM":   func(path string) string { return fmtNum(*camera.FieldByPath(path).Min / 1e6) }, // bit/s → Mbit/s
+	"maxM":   func(path string) string { return fmtNum(*camera.FieldByPath(path).Max / 1e6) },
+	"values": func(path string) []string { return camera.FieldByPath(path).Values },
+	"sizes":  func(path string) [][2]int { return camera.FieldByPath(path).Sizes },
 }
 
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	d := ui{
-		L:             camera.Limits,
-		StreamSizes:   camera.StreamSizes,
-		Metering:      camera.MeteringModes,
-		ExposureModes: camera.ExposureModes,
-		AWBModes:      camera.AWBModes,
-		DenoiseModes:  camera.DenoiseModes,
-		ContrastMax:   4,
-		SaturationMax: 4,
-		SharpnessMax:  8,
-		BitrateMinM:   float64(camera.Limits.BitrateMin) / 1e6,
-		BitrateMaxM:   float64(camera.Limits.BitrateMax) / 1e6,
+func fmtNum(x float64) string { return strconv.FormatFloat(x, 'f', -1, 64) }
 
-		MJPEGBitrateMinM: float64(camera.Limits.MJPEGBitrateMin) / 1e6,
-		MJPEGBitrateMaxM: float64(camera.Limits.MJPEGBitrateMax) / 1e6,
-	}
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.Execute(w, d); err != nil {
+	if err := s.tmpl.Execute(w, nil); err != nil {
 		s.log.Printf("web: template: %v", err)
 	}
 }

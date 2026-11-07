@@ -18,7 +18,7 @@
     <div class="toolbar">
       <button id="capture" class="primary" title="Shortcut: c">📷 Capture</button>
       <label class="inline">JPEG quality
-        <input type="number" data-path="still.quality" min="{{.L.QualityMin}}" max="{{.L.QualityMax}}" step="1">
+        <input type="number" data-path="still.quality" min="{{min "still.quality"}}" max="{{max "still.quality"}}" step="1">
       </label>
       <button id="fullscreen" title="Fullscreen">⛶</button>
     </div>
@@ -36,26 +36,26 @@
       <summary>Stream</summary>
       <label>Stream size <span class="interrupts">interrupts stream</span>
         <select data-path="pipeline.stream_size" data-kind="size">
-          {{range .StreamSizes}}<option value="{{index . 0}}x{{index . 1}}">{{index . 0}}×{{index . 1}}</option>{{end}}
+          {{range sizes "pipeline.stream_size"}}<option value="{{index . 0}}x{{index . 1}}">{{index . 0}}×{{index . 1}}</option>{{end}}
         </select>
       </label>
       <label>Frame rate <output data-for="controls.fps"></output> fps <span class="interrupts">interrupts stream</span> <button type="button" class="info" popovertarget="info-fps" aria-label="About frame rate">i</button>
-        <input type="range" data-path="controls.fps" min="{{.L.FPSMin}}" max="{{.L.FPSMax}}" step="1">
+        <input type="range" data-path="controls.fps" min="{{min "controls.fps"}}" max="{{max "controls.fps"}}" step="1">
       </label>
       <label>Bitrate <output data-for="encoder.bitrate"></output> Mbit/s <span class="interrupts">interrupts stream</span>
-        <input type="range" data-path="encoder.bitrate" data-scale="1000000" min="{{.BitrateMinM}}" max="{{.BitrateMaxM}}" step="0.25">
+        <input type="range" data-path="encoder.bitrate" data-scale="1000000" min="{{minM "encoder.bitrate"}}" max="{{maxM "encoder.bitrate"}}" step="0.25">
       </label>
       <label>Keyframe interval (frames) <span class="interrupts">interrupts stream</span>
-        <input type="number" data-path="encoder.gop" min="{{.L.GOPMin}}" max="{{.L.GOPMax}}" step="1">
+        <input type="number" data-path="encoder.gop" min="{{min "encoder.gop"}}" max="{{max "encoder.gop"}}" step="1">
       </label>
       <label>Camera buffers <span class="interrupts">interrupts stream</span>
-        <input type="number" data-path="pipeline.buffer_count" min="{{.L.BufferMin}}" max="{{.L.BufferMax}}" step="1">
+        <input type="number" data-path="pipeline.buffer_count" min="{{min "pipeline.buffer_count"}}" max="{{max "pipeline.buffer_count"}}" step="1">
       </label>
       <label>MJPEG fallback bitrate <output data-for="mjpeg.bitrate"></output> Mbit/s <button type="button" class="info" popovertarget="info-mjpeg" aria-label="About MJPEG fallback">i</button>
-        <input type="range" data-path="mjpeg.bitrate" data-scale="1000000" min="{{.MJPEGBitrateMinM}}" max="{{.MJPEGBitrateMaxM}}" step="1">
+        <input type="range" data-path="mjpeg.bitrate" data-scale="1000000" min="{{minM "mjpeg.bitrate"}}" max="{{maxM "mjpeg.bitrate"}}" step="1">
       </label>
       <label>MJPEG fallback: every <output data-for="mjpeg.skip"></output>. camera frame
-        <input type="range" data-path="mjpeg.skip" min="1" max="{{.L.MJPEGSkipMax}}" step="1">
+        <input type="range" data-path="mjpeg.skip" min="{{min "mjpeg.skip"}}" max="{{max "mjpeg.skip"}}" step="1">
       </label>
     </details>
 
@@ -66,19 +66,19 @@
         <button type="button" class="info" popovertarget="info-exposure" aria-label="About exposure">i</button>
       </div>
       <label>Shutter <span class="mode-note">manual</span> <output data-for="controls.shutter_us"></output> <button type="button" class="info" popovertarget="info-shutter" aria-label="About shutter">i</button>
-        <input type="range" data-path="controls.shutter_us" data-log data-min="{{.L.ShutterMin}}" data-max="{{.L.ShutterMax}}" min="0" max="1000" step="1" class="manual-exp">
+        <input type="range" data-path="controls.shutter_us" data-log data-min="{{min "controls.shutter_us"}}" data-max="{{max "controls.shutter_us"}}" min="0" max="1000" step="1" class="manual-exp">
       </label>
       <label>Gain <span class="mode-note">manual</span> <output data-for="controls.gain"></output> <button type="button" class="info" popovertarget="info-gain" aria-label="About gain">i</button>
-        <input type="range" data-path="controls.gain" min="{{.L.GainMin}}" max="{{.L.GainMax}}" step="0.1" class="manual-exp">
+        <input type="range" data-path="controls.gain" min="{{min "controls.gain"}}" max="{{max "controls.gain"}}" step="0.1" class="manual-exp">
       </label>
       <label>EV compensation <span class="mode-note">auto</span> <output data-for="controls.ev"></output> <button type="button" class="info" popovertarget="info-ev" aria-label="About EV compensation">i</button>
-        <input type="range" data-path="controls.ev" min="{{.L.EVMin}}" max="{{.L.EVMax}}" step="0.1" class="auto-exp">
+        <input type="range" data-path="controls.ev" min="{{min "controls.ev"}}" max="{{max "controls.ev"}}" step="0.1" class="auto-exp">
       </label>
       <label>Metering <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-metering" aria-label="About metering">i</button>
-        <select data-path="controls.metering" class="auto-exp">{{range .Metering}}<option>{{.}}</option>{{end}}</select>
+        <select data-path="controls.metering" class="auto-exp">{{range values "controls.metering"}}<option>{{.}}</option>{{end}}</select>
       </label>
       <label>Exposure profile <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-profile" aria-label="About exposure profiles">i</button>
-        <select data-path="controls.exposure_mode" class="auto-exp">{{range .ExposureModes}}<option>{{.}}</option>{{end}}</select>
+        <select data-path="controls.exposure_mode" class="auto-exp">{{range values "controls.exposure_mode"}}<option>{{.}}</option>{{end}}</select>
       </label>
       <p id="profile-desc" class="hint">–</p>
       <div class="row readout-head"><b>Actual values</b> <button type="button" class="info" popovertarget="info-readout" aria-label="About actual exposure values">i</button></div>
@@ -128,14 +128,14 @@
         <button type="button" class="info" popovertarget="info-wb" aria-label="About white balance">i</button>
       </div>
       <label>Mode <span class="mode-note">auto</span> <button type="button" class="info" popovertarget="info-awb-mode" aria-label="About white balance modes">i</button>
-        <select data-path="controls.awb_mode" class="auto-wb">{{range .AWBModes}}<option>{{.}}</option>{{end}}</select>
+        <select data-path="controls.awb_mode" class="auto-wb">{{range values "controls.awb_mode"}}<option>{{.}}</option>{{end}}</select>
       </label>
       <p id="awb-desc" class="hint"></p>
       <label>Red gain <span class="mode-note">manual</span> <output data-for="controls.wb_gain_r"></output> <button type="button" class="info" popovertarget="info-wb-gains" aria-label="About manual colour gains">i</button>
-        <input type="range" data-path="controls.wb_gain_r" min="{{.L.WBGainMin}}" max="8" step="0.05" class="manual-wb">
+        <input type="range" data-path="controls.wb_gain_r" min="{{min "controls.wb_gain_r"}}" max="8" step="0.05" class="manual-wb">
       </label>
       <label>Blue gain <span class="mode-note">manual</span> <output data-for="controls.wb_gain_b"></output> <button type="button" class="info" popovertarget="info-wb-gains" aria-label="About manual colour gains">i</button>
-        <input type="range" data-path="controls.wb_gain_b" min="{{.L.WBGainMin}}" max="8" step="0.05" class="manual-wb">
+        <input type="range" data-path="controls.wb_gain_b" min="{{min "controls.wb_gain_b"}}" max="8" step="0.05" class="manual-wb">
       </label>
     </details>
 
@@ -145,16 +145,16 @@
         and to snapshots. It does not change exposure.</p>
         <button type="button" class="info" popovertarget="info-image" aria-label="About image processing">i</button></div>
       <label>Brightness <output data-for="controls.brightness"></output> <button type="button" class="info" popovertarget="info-brightness" aria-label="About brightness">i</button>
-        <input type="range" data-path="controls.brightness" min="{{.L.BrightnessMin}}" max="{{.L.BrightnessMax}}" step="0.05">
+        <input type="range" data-path="controls.brightness" min="{{min "controls.brightness"}}" max="{{max "controls.brightness"}}" step="0.05">
       </label>
       <label>Contrast <output data-for="controls.contrast"></output> <button type="button" class="info" popovertarget="info-contrast" aria-label="About contrast">i</button>
-        <input type="range" data-path="controls.contrast" min="0" max="{{.ContrastMax}}" step="0.05">
+        <input type="range" data-path="controls.contrast" min="0" max="4" step="0.05">
       </label>
       <label>Saturation <output data-for="controls.saturation"></output> <button type="button" class="info" popovertarget="info-saturation" aria-label="About saturation">i</button>
-        <input type="range" data-path="controls.saturation" min="0" max="{{.SaturationMax}}" step="0.05">
+        <input type="range" data-path="controls.saturation" min="0" max="4" step="0.05">
       </label>
       <label>Sharpness <output data-for="controls.sharpness"></output> <button type="button" class="info" popovertarget="info-sharpness" aria-label="About sharpness">i</button>
-        <input type="range" data-path="controls.sharpness" min="0" max="{{.SharpnessMax}}" step="0.1">
+        <input type="range" data-path="controls.sharpness" min="0" max="8" step="0.1">
       </label>
       <label>Denoise <button type="button" class="info" popovertarget="info-denoise" aria-label="About denoise">i</button>
         <select data-path="controls.denoise">

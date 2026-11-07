@@ -207,8 +207,8 @@ firmware's rate control, MJPEG included, uses the frame rate it is given.
 
 All settings live in one JSON document ([`GET/POST /api/config`](REST_API.md#config)),
 persisted in `<data>/config.json` and re-applied whenever the helper
-(re)connects. Ranges are in [`GET /api/schema`](REST_API.md#schema) and in
-`internal/camera/config.go` (`Limits`); the mapping to libcamera controls is in
+(re)connects. Ranges are defined once, in the schema
+(`internal/camera/schema.go`, published as [`GET /api/schema`](REST_API.md#schema)); the mapping to libcamera controls is in
 `internal/camera/controls.go`.
 
 | Setting | Range (default) | libcamera / Picamera2 | Applied by | Details |

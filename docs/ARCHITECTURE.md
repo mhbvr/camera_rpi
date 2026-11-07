@@ -177,7 +177,7 @@ Packages (`internal/`):
 |---|---|
 | `proto` | helper protocol types: video framing, JSON-RPC 2.0 messages |
 | `helper` | socket listener, session (RPC calls matched by id, video reader goroutine), supervisor (spawn, restart with backoff) |
-| `camera` | `Config` model, `Limits`, validation, `Schema`, `Diff`, libcamera control mapping, `Manager` (drives the session), persistence |
+| `camera` | `Config` model, settings schema (ranges, validation), `Diff`, libcamera control mapping, `Manager` (drives the session), persistence |
 | `stream` | `Hub` (H.264 + events fan-out, drop-to-keyframe), `FrameHub` (MJPEG, latest frame wins), browser wire format |
 | `h264` | NAL scanning, SPS → codec string |
 | `web` | HTTP server, REST handlers, template, static JS/CSS |
@@ -187,14 +187,15 @@ Packages (`internal/`):
   (reconfigure), `encoder` (encoder restart), `controls` (live; a frame-rate
   change also restarts the encoder), `still` (per capture), `mjpeg` (fallback
   encoder). Every field: [HARDWARE.md §4](HARDWARE.md#4-settings-reference).
-- `POST /api/config` merges a partial document, validates it (Go-side
-  `Limits` plus the camera's own gain and shutter maxima from `hello`), diffs
+- `POST /api/config` merges a partial document, validates it (the
+  settings schema plus the camera's own gain and shutter maxima from `hello`), diffs
   it against the current one and sends the least disruptive helper calls:
   `set_controls`, then `set_encoder` or `configure`.
 - Saved to `<data>/config.json`; applied after every `hello`, so it survives
   helper and server restarts.
-- `GET /api/schema` publishes the same ranges for other clients; a test keeps
-  it identical to validation.
+- The schema (`internal/camera/schema.go`) is the only definition of ranges
+  and allowed values: validation checks against it, `GET /api/schema`
+  publishes it, and the page template reads its form ranges from it.
 
 ### 4.2 Fan-out and backpressure (`stream.Hub`)
 - One encoded stream, N clients, each with a bounded queue (30 messages ≈ 1 s)
@@ -335,7 +336,7 @@ docs/              this documentation
 
 | Layer | How |
 |---|---|
-| Go packages | unit tests (`make test`: `go vet`, `go test -race`), including HTTP handler tests for every endpoint and a schema-vs-validation test |
+| Go packages | unit tests (`make test`: `go vet`, `go test -race`), including HTTP handler tests for every endpoint and a test that the schema covers every config field |
 | helper protocol, Go side | tests with an in-process fake helper over real Unix sockets |
 | Python helper | `camhelper/test_camhelper.py` (framing, dispatcher, JPEG colour round trip, encoder rate control and its fallback) on a fake Picamera2 (`camhelper/fake/`) |
 | end to end without a Pi | `make run-fake` (camweb + `cmd/fakecam` replaying `testdata/test.h264`) or `make run-fake-py` (camweb + the real `camhelper.py` on the fake Picamera2), checked in headless Chromium |

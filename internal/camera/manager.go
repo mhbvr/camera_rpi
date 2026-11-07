@@ -350,7 +350,7 @@ func (m *Manager) Snapshot(ctx context.Context, quality int) (proto.SnapshotResu
 	if quality == 0 {
 		quality = cfg.Still.Quality
 	}
-	if err := rangeI("quality", quality, Limits.QualityMin, Limits.QualityMax); err != nil {
+	if err := FieldByPath("still.quality").Check(float64(quality)); err != nil {
 		return res, err
 	}
 	dir, err := filepath.Abs(m.opt.CapturesDir)
