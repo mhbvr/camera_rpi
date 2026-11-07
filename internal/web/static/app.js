@@ -283,9 +283,10 @@ function showNoCodec(reason) {
   $('#nocodec').hidden = false;
 }
 
-const player = new Player($('#video'), {
-  mjpegImg: useMJPEG ? $('#mjpeg') : null,
-  fallbackImg: $('#mjpeg'),
+const player = new Player({
+  canvas: $('#video'),
+  img: $('#mjpeg'),
+  mjpeg: useMJPEG,
   onFallback(reason) {
     showNoCodec('its H.264 decoder failed: ' + reason);
   },

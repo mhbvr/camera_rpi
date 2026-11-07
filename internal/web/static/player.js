@@ -1,92 +1,89 @@
-// Low-latency H.264 player: fetch('/stream') → 16-byte framed messages →
-// WebCodecs VideoDecoder → <canvas>. See docs/ARCHITECTURE.md §5.
-// MJPEG fallback (ARCHITECTURE.md §5.3): an <img> shows /stream.mjpeg, and
-// /stream?video=0 still delivers the events. Used from the start when the
-// browser has no VideoDecoder (mjpegImg), or switched to at runtime when the
-// decoder exists but cannot decode the stream (fallbackImg), as on Firefox
-// for Android: VideoDecoder is there, H.264 fails with NotSupportedError.
+// Live player with two modes:
+//   'h264'  fetch('/stream') → 16-byte framed messages → WebCodecs
+//           VideoDecoder → <canvas> (docs/ARCHITECTURE.md §5.2)
+//   'mjpeg' an <img> shows /stream.mjpeg; fetch('/stream?video=0') still
+//           delivers the events (ARCHITECTURE.md §5.3)
+// The page starts in 'mjpeg' when the browser has no VideoDecoder. In 'h264'
+// the player switches to 'mjpeg' in place if the decoder cannot decode the
+// stream before showing any frame (Firefox for Android: VideoDecoder exists,
+// H.264 fails with NotSupportedError).
 const HEADER = 16;
 const T_VIDEO = 1, T_EVENT = 2;
 const F_KEY = 1, F_CONFIG = 2;
-const MAX_EARLY_FAILURES = 3; // decoder failures before any frame → fallback
+const MAX_EARLY_FAILURES = 3; // decoder failures before any frame → MJPEG
+const RETRY_MS = 2000; // fixed reconnect interval
 
 export class Player {
-  constructor(canvas, { onEvent = () => {}, onStatus = () => {}, onStats = () => {}, onFallback = () => {}, mjpegImg = null, fallbackImg = null } = {}) {
+  constructor({ canvas, img, mjpeg = false, onEvent = () => {}, onStatus = () => {}, onStats = () => {}, onFallback = () => {} }) {
     this.canvas = canvas;
-    this.mjpegImg = mjpegImg; // set: MJPEG fallback mode
-    this.fallbackImg = fallbackImg; // switch to MJPEG here if H.264 decoding fails
-    this.onFallback = onFallback;
-    this.reader = null;
-    this.reconnectNow = false;
-    this.decodedTotal = 0; // frames decoded since page load
-    this.earlyFailures = 0; // decoder failures while decodedTotal == 0
-    this.ctx = canvas.getContext('2d');
+    this.img = img;
+    this.mode = mjpeg ? 'mjpeg' : 'h264';
     this.onEvent = onEvent;
     this.onStatus = onStatus;
     this.onStats = onStats;
+    this.onFallback = onFallback;
+    this.reader = null; // current /stream reader, cancelled on a mode switch
+    // H.264 decoding
+    this.ctx = canvas.getContext('2d');
     this.decoder = null;
     this.spsKey = '';
     this.needKey = true;
     this.pending = null; // newest decoded frame not yet drawn
     this.drawScheduled = false;
+    this.decodedTotal = 0; // frames decoded since page load
+    this.earlyFailures = 0; // decoder failures while decodedTotal == 0
+    // stats, reported every second
     this.frames = 0;
     this.bytes = 0;
     this.dropped = 0;
     this.width = 0;
     this.height = 0;
-    this.decoder_supported = !mjpegImg && 'VideoDecoder' in window;
     setInterval(() => this.reportStats(), 1000);
   }
 
   async run() {
-    if (this.mjpegImg) this.startMJPEG();
-    for (let attempt = 0; ; attempt++) {
-      if (attempt > 0 && this.mjpegImg) this.loadMJPEG(); // server may have restarted
+    if (this.mode === 'mjpeg') this.showMJPEG();
+    for (;;) {
+      const mode = this.mode;
       try {
-        await this.readStream();
-        if (!this.reconnectNow) this.onStatus('stream ended');
+        await this.readStream(mode);
+        if (this.mode === mode) this.onStatus('stream ended');
       } catch (e) {
-        if (!this.reconnectNow) this.onStatus('reconnecting: ' + e.message);
+        if (this.mode === mode) this.onStatus('reconnecting: ' + e.message);
       }
       this.resetDecoder();
-      if (this.reconnectNow) { // switched to MJPEG: reopen /stream?video=0 now
-        this.reconnectNow = false;
-        attempt = -1;
-        continue;
-      }
-      await new Promise((r) => setTimeout(r, 2000)); // fixed 2 s retry
+      if (this.mode !== mode) continue; // switched to MJPEG: reopen /stream?video=0 at once
+      await new Promise((r) => setTimeout(r, RETRY_MS));
+      if (this.mode === 'mjpeg') this.loadMJPEG(); // the server may have restarted
     }
   }
 
-  // MJPEG fallback: the browser decodes multipart JPEG in an <img> natively.
-  startMJPEG() {
-    const img = this.mjpegImg;
-    img.hidden = false;
+  // switchToMJPEG changes to the MJPEG fallback in place: the H.264 decoder
+  // does not work in this browser even though VideoDecoder exists.
+  switchToMJPEG(reason) {
+    if (this.mode === 'mjpeg') return;
+    this.mode = 'mjpeg';
+    this.resetDecoder();
+    this.onFallback(reason);
+    this.showMJPEG();
+    // End the current /stream; run() reconnects without video.
+    this.reader?.cancel().catch(() => {});
+  }
+
+  // The browser decodes multipart JPEG in an <img> natively.
+  showMJPEG() {
+    this.img.hidden = false;
     this.canvas.hidden = true;
-    img.addEventListener('error', () => {
+    this.img.addEventListener('error', () => {
       this.onStatus('MJPEG reconnecting');
-      setTimeout(() => this.loadMJPEG(), 2000);
+      setTimeout(() => this.loadMJPEG(), RETRY_MS);
     });
-    img.addEventListener('load', () => this.onStatus('connected'));
+    this.img.addEventListener('load', () => this.onStatus('connected'));
     this.loadMJPEG();
   }
 
   loadMJPEG() {
-    this.mjpegImg.src = '/stream.mjpeg?t=' + Date.now();
-  }
-
-  // fallback switches to MJPEG in place: the H.264 decoder does not work in
-  // this browser even though VideoDecoder exists.
-  fallback(reason) {
-    if (this.mjpegImg || !this.fallbackImg) return;
-    this.resetDecoder();
-    this.decoder_supported = false;
-    this.mjpegImg = this.fallbackImg;
-    this.onFallback(reason);
-    this.startMJPEG();
-    // Reconnect /stream without video, so the server stops sending H.264.
-    this.reconnectNow = true;
-    if (this.reader) this.reader.cancel().catch(() => {});
+    this.img.src = '/stream.mjpeg?t=' + Date.now();
   }
 
   // decoderFailed counts decoder failures before the first decoded frame. A
@@ -98,17 +95,21 @@ export class Player {
     if (this.decodedTotal > 0) return;
     this.earlyFailures++;
     if (e.name === 'NotSupportedError' || this.earlyFailures >= MAX_EARLY_FAILURES) {
-      this.fallback(e.message || e.name);
+      this.switchToMJPEG(e.message || e.name);
     }
   }
 
-  async readStream() {
+  async readStream(mode) {
     // In MJPEG mode only the events are needed from /stream.
-    const res = await fetch(this.mjpegImg ? '/stream?video=0' : '/stream', { cache: 'no-store' });
+    const res = await fetch(mode === 'mjpeg' ? '/stream?video=0' : '/stream', { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     this.onStatus('connected');
     const reader = res.body.getReader();
     this.reader = reader;
+    if (this.mode !== mode) { // switched while connecting
+      reader.cancel().catch(() => {});
+      return;
+    }
     let buf = new Uint8Array(0);
     for (;;) {
       const { value, done } = await reader.read();
@@ -138,7 +139,7 @@ export class Player {
       this.onEvent(ev);
       return;
     }
-    if (type !== T_VIDEO || !this.decoder_supported) return;
+    if (type !== T_VIDEO || this.mode !== 'h264') return;
     this.bytes += payload.length;
     const key = (flags & F_KEY) !== 0;
     if (flags & F_CONFIG) this.maybeConfigure(payload);
@@ -181,7 +182,7 @@ export class Player {
     // config otherwise only shows up as a NotSupportedError on the decoder.
     if (this.decodedTotal === 0 && VideoDecoder.isConfigSupported) {
       VideoDecoder.isConfigSupported(cfg).then((r) => {
-        if (!r.supported && this.decodedTotal === 0) this.fallback('H.264 ' + codec + ' not supported');
+        if (!r.supported && this.decodedTotal === 0) this.switchToMJPEG('H.264 ' + codec + ' not supported');
       }).catch(() => {});
     }
     this.needKey = true;
@@ -223,8 +224,8 @@ export class Player {
   }
 
   reportStats() {
-    if (this.mjpegImg) {
-      this.onStats({ mjpeg: true, width: this.mjpegImg.naturalWidth, height: this.mjpegImg.naturalHeight });
+    if (this.mode === 'mjpeg') {
+      this.onStats({ mjpeg: true, width: this.img.naturalWidth, height: this.img.naturalHeight });
       return;
     }
     this.onStats({ fps: this.frames, kbps: (this.bytes * 8) / 1000, width: this.width, height: this.height, dropped: this.dropped, codec: this.codec });
