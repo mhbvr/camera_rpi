@@ -162,12 +162,14 @@ Restarts only the encoder with new parameters. The video channel gets a new
 ```
 
 `framerate` (in `configure.encoder` and `set_encoder`) is the actual frame
-rate. The Pi encoder's rate control assumes 30 fps whatever Picamera2 is told,
+rate. The Pi encoder's rate control assumes 30 fps unless the frame rate is
+set with `VIDIOC_S_PARM` (the kernel driver's default; Picamera2 sets it only
+with `enable_sps_framerate=True`, [HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)),
 so delivered bitrate = requested × fps / 30 (spike 0.9,
 [HARDWARE.md §3](HARDWARE.md#3-encoders)). The Picamera2
 helper compensates by handing the encoder `bitrate × 30 / framerate` (capped at
 25 Mbit/s) and reports it as `encoder_bitrate` in `stream_start`. A C++ helper
-that sets the encoder frame rate properly would not need this. Either way, the
+that sets the frame rate with `VIDIOC_S_PARM` would not need this. Either way, the
 server sends `set_encoder` after any frame-rate change.
 
 #### `snapshot`

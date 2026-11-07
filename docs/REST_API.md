@@ -232,9 +232,11 @@ mpv --profile=low-latency --demuxer-lavf-format=h264 http://raspberrypi.local:80
 ffmpeg -f h264 -i http://raspberrypi.local:8080/stream.h264 -c copy -t 60 clip.mp4
 ```
 
-There are no timestamps in a raw stream: players assume a frame rate
-(`stream.fps` from [status](#status)); add `-framerate 30` for ffmpeg/ffplay if
-timing matters. After a stream-size change the stream continues with new
+There are no timestamps in a raw stream: players take the frame rate from
+the SPS, which says 30 fps whatever the real rate is
+([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)). If timing
+matters, pass the real rate (`stream.fps` from [status](#status)), for example
+`-framerate 15` before `-i` for ffmpeg/ffplay. After a stream-size change the stream continues with new
 SPS/PPS.
 
 ### /stream.mjpeg

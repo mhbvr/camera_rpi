@@ -333,18 +333,26 @@ def exp_limits(picam2, seconds=6):
     from picamera2.encoders import H264Encoder
     print("## 0.9 Encoder limits (1440x1080)\n")
     import camhelper
-    print("Bitrate accuracy without and with camhelper's compensation (bitrate * 30 / fps).\n")
-    print("| fps | compensated | requested | delivered fps | Mbit/s | CPU % |\n|---|---|---|---|---|---|")
-    for fps, br, comp in ((30, 6_000_000, False), (40, 6_000_000, False), (40, 6_000_000, True),
-                          (40, 2_000_000, True), (40, 12_000_000, True), (15, 6_000_000, False),
-                          (15, 6_000_000, True)):
+    # Methods: "none" = bitrate as requested; "compensated" = camhelper's
+    # bitrate * 30 / fps; "s_parm" = tell the driver the real frame rate
+    # (framerate= plus enable_sps_framerate=True makes Picamera2 call
+    # VIDIOC_S_PARM; the bcm2835-codec driver otherwise assumes 30 fps).
+    print("Bitrate accuracy: as requested, with camhelper's compensation (bitrate * 30 / fps), "
+          "or with the real frame rate given to the driver (s_parm).\n")
+    print("| fps | method | requested | delivered fps | Mbit/s | CPU % |\n|---|---|---|---|---|---|")
+    for fps, br, method in ((30, 6_000_000, "none"), (40, 6_000_000, "none"), (40, 6_000_000, "compensated"),
+                            (40, 2_000_000, "compensated"), (40, 12_000_000, "compensated"),
+                            (15, 6_000_000, "none"), (15, 6_000_000, "compensated"),
+                            (40, 6_000_000, "s_parm"), (40, 12_000_000, "s_parm"), (15, 6_000_000, "s_parm")):
         picam2.configure(video_config(picam2, fps=fps))
         rec = Recorder()
-        kw = dict(bitrate=camhelper.encoder_bitrate(br, fps) if comp else br, repeat=True, iperiod=fps)
+        kw = dict(bitrate=camhelper.encoder_bitrate(br, fps) if method == "compensated" else br, repeat=True, iperiod=fps)
+        if method == "s_parm":
+            kw.update(framerate=fps, enable_sps_framerate=True)
         try:
             enc = H264Encoder(**kw)
         except TypeError:
-            print("| %d | not supported | | | | |" % fps)
+            print("| %d | %s: not supported by this Picamera2 | | | | |" % (fps, method))
             continue
         c0 = cpu_seconds()
         picam2.start_encoder(enc, rec.output, name="lores")
@@ -356,7 +364,7 @@ def exp_limits(picam2, seconds=6):
         cpu = (cpu_seconds() - c0) / (seconds + 1)
         picam2.stop_encoder(enc)
         picam2.stop()
-        print("| %d | %s | %d M | %.1f | %.2f | %.0f |" % (fps, "yes" if comp else "no", br // 1_000_000,
+        print("| %d | %s | %d M | %.1f | %.2f | %.0f |" % (fps, method, br // 1_000_000,
                                                       (n1 - n0) / (t1 - t0), (b1 - b0) * 8 / (t1 - t0) / 1e6, cpu * 100))
     print()
 
@@ -367,13 +375,18 @@ def exp_mjpeg(picam2, fps=30, seconds=6):
     import camhelper
     from picamera2.encoders import H264Encoder, MJPEGEncoder
     print("## 0.10 MJPEG fallback in parallel with H.264 (1440x1080@%d, H.264 6 Mbit/s)\n" % fps)
-    print("Requested MJPEG bitrate vs. delivered, without and with camhelper's compensation "
-          "(bitrate * 30 / MJPEG fps); H.264 must stay at %d fps with 0 dropped frames.\n" % fps)
+    print("Requested MJPEG bitrate vs. delivered: as requested, with camhelper's compensation "
+          "(bitrate * 30 / MJPEG fps), or with the MJPEG frame rate given to the driver (s_parm); "
+          "H.264 must stay at %d fps with 0 dropped frames.\n" % fps)
     print("| MJPEG | H.264 fps | H.264 drops | MJPEG fps | MJPEG Mbit/s | MJPEG KB/frame | CPU % |")
     print("|---|---|---|---|---|---|---|")
-    # (requested bitrate, skip, compensated)
-    cases = [None, (8_000_000, 2, False), (4_000_000, 2, True), (8_000_000, 2, True),
-             (8_000_000, 1, True), (4_000_000, 3, True)]
+    # (requested bitrate, skip, method). "s_parm": MJPEGEncoder has no framerate
+    # argument, but it inherits V4L2Encoder's framerate/_enable_framerate
+    # attributes; with both set, Picamera2 calls VIDIOC_S_PARM, which the
+    # bcm2835-codec driver passes to the firmware encoder (default: 30 fps).
+    cases = [None, (8_000_000, 2, "none"), (4_000_000, 2, "compensated"), (8_000_000, 2, "compensated"),
+             (8_000_000, 1, "compensated"), (4_000_000, 3, "compensated"),
+             (8_000_000, 2, "s_parm"), (4_000_000, 3, "s_parm"), (8_000_000, 1, "s_parm")]
     for case in cases:
         picam2.configure(video_config(picam2, fps=fps))
         h264 = Recorder()
@@ -384,9 +397,12 @@ def exp_mjpeg(picam2, fps=30, seconds=6):
         picam2.start_encoder(enc, h264.output, name="lores")
         if case:
             mj = Recorder()
-            br = camhelper.encoder_bitrate(case[0], fps / case[1]) if case[2] else case[0]
+            br = camhelper.encoder_bitrate(case[0], fps / case[1]) if case[2] == "compensated" else case[0]
             mjenc = MJPEGEncoder(bitrate=br)
             mjenc.frame_skip_count = case[1]
+            if case[2] == "s_parm":
+                mjenc.framerate = fps / case[1]
+                mjenc._enable_framerate = True
             picam2.start_encoder(mjenc, mj.output, name="lores")
         picam2.start()
         time.sleep(1)
@@ -404,7 +420,7 @@ def exp_mjpeg(picam2, fps=30, seconds=6):
         drops = sum(1 for i in range(1, len(ts)) if ts[i] - ts[i - 1] > 1.5 * 1e6 / fps)
         dt = ht1 - ht0
         label = "none (H.264 only)" if not case else "%d M, every %d.%s" % (
-            case[0] // 1_000_000, case[1], ", compensated" if case[2] else "")
+            case[0] // 1_000_000, case[1], "" if case[2] == "none" else ", " + case[2])
         if mj:
             n = max(1, mn1 - mn0)
             print("| %s | %.1f | %d | %.1f | %.2f | %.0f | %.0f |" % (label, (hn1 - hn0) / dt, drops, (mn1 - mn0) / dt,
