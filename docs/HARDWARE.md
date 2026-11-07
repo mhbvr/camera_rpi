@@ -376,7 +376,7 @@ brighter image: lower the frame rate (15 fps allows the normal profile's
 ### 8.2 Manual mode
 - `AeEnable` is a wrapper for `ExposureTimeMode`/`AnalogueGainMode`
   ([ipa_base.cpp#L1103-L1112](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1103-L1112));
-  camweb sends the two modes when the camera has them (spike 0.1).
+  camweb sends the two modes (spike 0.1) together with `AeEnable`.
 - Manual values are ignored while auto is on
   ([#L979-L997](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L979-L997),
   [#L1003-L1020](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1003-L1020)).

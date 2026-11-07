@@ -101,11 +101,35 @@ func TestDiff(t *testing.T) {
 	}
 }
 
+// testHello describes the HQ camera as the real helper reports it (spike 0.1).
+func testHello() *proto.Hello {
+	enum := func(names ...string) proto.ControlInfo {
+		v := map[string]int{}
+		for i, n := range names {
+			v[n] = i
+		}
+		return proto.ControlInfo{Values: v}
+	}
+	return &proto.Hello{Camera: proto.CameraInfo{Controls: map[string]proto.ControlInfo{
+		"AeEnable": {}, "ExposureTime": {}, "AnalogueGain": {}, "ExposureTimeMode": {}, "AnalogueGainMode": {},
+		"ExposureValue": {}, "AwbEnable": {}, "ColourGains": {}, "FrameDurationLimits": {},
+		"Brightness": {}, "Contrast": {}, "Saturation": {}, "Sharpness": {},
+		"AeMeteringMode":     enum("CentreWeighted", "Spot", "Matrix", "Custom"),
+		"AeExposureMode":     enum("Normal", "Short", "Long", "Custom"),
+		"AwbMode":            enum("Auto", "Incandescent", "Tungsten", "Fluorescent", "Indoor", "Daylight", "Cloudy", "Custom"),
+		"NoiseReductionMode": enum("Off", "Fast", "HighQuality", "Minimal", "ZSL"),
+	}}}
+}
+
 func TestControlMap(t *testing.T) {
+	h := testHello()
 	c := Defaults().Controls
-	m := ControlMap(c, nil)
-	if m["AeEnable"] != true || m["ExposureTime"] != 0 || m["AwbMode"] != 0 {
+	m := ControlMap(c, h)
+	if m["AeEnable"] != true || m["ExposureTimeMode"] != 0 || m["AnalogueGainMode"] != 0 || m["AwbMode"] != 0 {
 		t.Fatalf("auto map %v", m)
+	}
+	if _, ok := m["ExposureTime"]; ok {
+		t.Fatal("ExposureTime must not be sent in auto mode")
 	}
 	if _, ok := m["ColourGains"]; ok {
 		t.Fatal("ColourGains with auto WB")
@@ -120,9 +144,9 @@ func TestControlMap(t *testing.T) {
 
 	c.AutoExposure, c.ShutterUS, c.Gain = false, 100_000, 4
 	c.AutoWB, c.WBGainR, c.WBGainB = false, 2, 1.2
-	c.Metering, c.Denoise = "spot", "high_quality"
-	m = ControlMap(c, nil)
-	if m["AeEnable"] != false || m["ExposureTime"] != 100_000 || m["AnalogueGain"] != 4.0 {
+	c.Metering, c.Denoise, c.AWBMode = "spot", "high_quality", "daylight"
+	m = ControlMap(c, h)
+	if m["AeEnable"] != false || m["ExposureTimeMode"] != 1 || m["ExposureTime"] != 100_000 || m["AnalogueGain"] != 4.0 {
 		t.Fatalf("manual exposure %v", m)
 	}
 	if fd := m["FrameDurationLimits"].([]int); fd[0] != 100_000 {
@@ -136,9 +160,9 @@ func TestControlMap(t *testing.T) {
 	}
 }
 
-func TestControlMapWithHello(t *testing.T) {
+func TestControlMapUsesCameraValues(t *testing.T) {
 	h := &proto.Hello{Camera: proto.CameraInfo{Controls: map[string]proto.ControlInfo{
-		"AeEnable": {}, "ExposureTime": {}, "AnalogueGain": {}, "ExposureTimeMode": {}, "AnalogueGainMode": {},
+		"AeEnable": {}, "ExposureTimeMode": {}, "AnalogueGainMode": {},
 		"AwbMode": {Values: map[string]int{"Auto": 0, "Daylight": 9}}, "AwbEnable": {},
 	}}}
 	c := Defaults().Controls
@@ -147,22 +171,20 @@ func TestControlMapWithHello(t *testing.T) {
 	if m["AwbMode"] != 9 {
 		t.Fatalf("enum from hello: %v", m["AwbMode"])
 	}
-	if m["ExposureTimeMode"] != 0 {
-		t.Fatalf("mode controls: %v", m)
-	}
-	if _, ok := m["ExposureTime"]; ok {
-		t.Fatal("ExposureTime should not be sent in auto when mode controls exist")
-	}
 	if _, ok := m["Contrast"]; ok {
 		t.Fatal("unsupported control not filtered")
+	}
+	c.AWBMode = "cloudy" // not offered by this camera
+	if _, ok := ControlMap(c, h)["AwbMode"]; ok {
+		t.Fatal("unknown enum value sent")
 	}
 }
 
 func TestChangedControls(t *testing.T) {
-	a := ControlMap(Defaults().Controls, nil)
+	a := ControlMap(Defaults().Controls, testHello())
 	c := Defaults().Controls
 	c.Contrast = 1.5
-	ch := ChangedControls(a, ControlMap(c, nil))
+	ch := ChangedControls(a, ControlMap(c, testHello()))
 	if len(ch) != 1 || ch["Contrast"] != 1.5 {
 		t.Fatalf("changed %v", ch)
 	}

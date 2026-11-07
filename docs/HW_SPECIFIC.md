@@ -44,8 +44,10 @@ sizes and controls come from the server.
 - **Control names** (`ExposureTime`, `AnalogueGain`, `AwbMode`,
   `NoiseReductionMode`, …) are libcamera's standard controls, the same on all
   Raspberry Pi cameras and both Pi platforms. The helper rejects controls the
-  camera does not list, and the server uses `ExposureTimeMode`/
-  `AnalogueGainMode` only when the camera reports them (`AeEnable` otherwise).
+  camera does not list, and the server leaves out controls the camera does not
+  report. Auto/manual exposure uses `ExposureTimeMode`/`AnalogueGainMode`
+  (libcamera with these controls is required), and enum values come from the
+  camera's `hello`.
 - **Metadata** (`Lux`, `FocusFoM`, `ColourTemperature`, …) is produced by
   Raspberry Pi's libcamera algorithms on every Pi camera.
 - **Tuning parameter names** shown in the UI popups (`rpi.agc →

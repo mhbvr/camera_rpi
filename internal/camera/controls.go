@@ -7,8 +7,8 @@ import (
 	"github.com/mhbvr/camera_rpi/internal/proto"
 )
 
-// libcamera enum names for our values, and their standard integer values
-// (used when the helper does not report enum names).
+// libcamera enum names for our values. The integer values come from the
+// camera (hello.camera.controls[...].values).
 var enumNames = map[string]map[string]string{
 	"AeMeteringMode": {"centre": "CentreWeighted", "spot": "Spot", "matrix": "Matrix"},
 	"AeExposureMode": {"normal": "Normal", "short": "Short", "long": "Long"},
@@ -17,25 +17,14 @@ var enumNames = map[string]map[string]string{
 	"NoiseReductionMode": {"off": "Off", "fast": "Fast", "high_quality": "HighQuality", "minimal": "Minimal"},
 }
 
-var enumDefaults = map[string]map[string]int{
-	"AeMeteringMode":     {"CentreWeighted": 0, "Spot": 1, "Matrix": 2, "Custom": 3},
-	"AeExposureMode":     {"Normal": 0, "Short": 1, "Long": 2, "Custom": 3},
-	"AwbMode":            {"Auto": 0, "Incandescent": 1, "Tungsten": 2, "Fluorescent": 3, "Indoor": 4, "Daylight": 5, "Cloudy": 6, "Custom": 7},
-	"NoiseReductionMode": {"Off": 0, "Fast": 1, "HighQuality": 2, "Minimal": 3, "ZSL": 4},
-}
-
+// enumValue returns the camera's integer value for one of our enum values,
+// or false if the camera does not have it.
 func enumValue(hello *proto.Hello, control, ours string) (int, bool) {
 	name, ok := enumNames[control][ours]
 	if !ok {
 		return 0, false
 	}
-	if hello != nil {
-		if ci, ok := hello.Camera.Controls[control]; ok && ci.Values != nil {
-			v, ok := ci.Values[name]
-			return v, ok
-		}
-	}
-	v, ok := enumDefaults[control][name]
+	v, ok := hello.Camera.Controls[control].Values[name]
 	return v, ok
 }
 
@@ -55,13 +44,12 @@ func EncoderFrameRate(c Controls) float64 {
 	return math.Round(1e9/float64(FrameDurationUS(c))) / 1000
 }
 
-// ControlMap converts Controls to libcamera controls. When hello reports a
-// control list, controls the camera does not support are left out.
+// ControlMap converts Controls to libcamera controls for the camera described
+// by hello (enum values and supported controls come from it). Controls the
+// camera does not list are left out.
 //
-// Auto/manual exposure: newer libcamera has ExposureTimeMode and
-// AnalogueGainMode (0 = auto, 1 = manual); older Raspberry Pi libcamera
-// treats ExposureTime = 0 / AnalogueGain = 0 as "automatic". Both are
-// handled; which one applies is checked in the M0 spike.
+// Auto/manual exposure uses ExposureTimeMode and AnalogueGainMode
+// (0 = auto, 1 = manual); manual values are sent only in manual mode.
 func ControlMap(c Controls, hello *proto.Hello) map[string]any {
 	d := FrameDurationUS(c)
 	m := map[string]any{
@@ -80,20 +68,12 @@ func ControlMap(c Controls, hello *proto.Hello) map[string]any {
 	if v, ok := enumValue(hello, "AeExposureMode", c.ExposureMode); ok {
 		m["AeExposureMode"] = v
 	}
-	hasModes := supports(hello, "ExposureTimeMode")
 	if c.AutoExposure {
-		if hasModes {
-			m["ExposureTimeMode"] = 0
-			m["AnalogueGainMode"] = 0
-		} else {
-			m["ExposureTime"] = 0
-			m["AnalogueGain"] = 0.0
-		}
+		m["ExposureTimeMode"] = 0
+		m["AnalogueGainMode"] = 0
 	} else {
-		if hasModes {
-			m["ExposureTimeMode"] = 1
-			m["AnalogueGainMode"] = 1
-		}
+		m["ExposureTimeMode"] = 1
+		m["AnalogueGainMode"] = 1
 		m["ExposureTime"] = c.ShutterUS
 		m["AnalogueGain"] = c.Gain
 	}
@@ -116,18 +96,7 @@ func ControlMap(c Controls, hello *proto.Hello) map[string]any {
 	return filterSupported(m, hello)
 }
 
-func supports(hello *proto.Hello, name string) bool {
-	if hello == nil {
-		return false
-	}
-	_, ok := hello.Camera.Controls[name]
-	return ok
-}
-
 func filterSupported(m map[string]any, hello *proto.Hello) map[string]any {
-	if hello == nil || len(hello.Camera.Controls) == 0 {
-		return m
-	}
 	for k := range m {
 		if _, ok := hello.Camera.Controls[k]; !ok {
 			delete(m, k)

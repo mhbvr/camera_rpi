@@ -63,7 +63,10 @@ func startFake(t *testing.T, l *helper.Listener) *fakeCam {
 		b, _ := proto.MarshalLine(v)
 		ctl.Write(b)
 	}
-	write(proto.Notification{JSONRPC: "2.0", Method: "hello", Params: json.RawMessage(`{"proto":1,"impl":"fake","camera":{"model":"imx477"}}`)})
+	hello := testHello()
+	hello.Proto, hello.Impl, hello.Camera.Model = proto.ProtoVersion, "fake", "imx477"
+	helloJSON, _ := json.Marshal(hello)
+	write(proto.Notification{JSONRPC: "2.0", Method: "hello", Params: helloJSON})
 	go func() {
 		lr := proto.NewLineReader(ctl)
 		for {
