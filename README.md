@@ -63,7 +63,9 @@ Open `http://raspberrypi.local:8080`. Over plain HTTP the page uses the MJPEG
 fallback; for H.264 (lower bandwidth) set up HTTPS below.
 
 Main flags (`./camweb -h` for all): `-hflip`, `-vflip` (both = rotate 180°),
-`-data DIR` (config and captures, default `./data`), `-tls-cert FILE -tls-key
+`-data DIR` (config, default `./data`), `-captures DIR` (where a snapshot is
+held until it is downloaded, then deleted; default `/dev/shm/camweb-captures`,
+in RAM), `-tls-cert FILE -tls-key
 FILE` (HTTPS), `-cors-origin ORIGIN` (allow a UI on another origin to use the
 API), `-helper external` / `-helper-cmd "..."` (run your own helper). To run it
 as a service: [deploy/camweb.service](deploy/camweb.service).

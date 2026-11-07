@@ -43,7 +43,7 @@ func TestEventsOnlySubscriber(t *testing.T) {
 	h := NewHub(8)
 	s := h.SubscribeEvents()
 	h.Publish(video(true, 1))
-	h.Publish(NewEvent(map[string]any{"event": "x"}))
+	h.Publish(NewEvent("x", nil))
 	got := drain(s)
 	if len(got) != 1 || got[0].Type != TypeEvent {
 		t.Fatalf("events-only subscriber got %d messages", len(got))

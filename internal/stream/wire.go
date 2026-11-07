@@ -26,11 +26,25 @@ const (
 	FlagConfig = proto.FlagConfig
 )
 
+// Event names: the "event" field of every event (docs/REST_API.md, Events).
+// Sticky events (the latest one is replayed to new viewers and served by
+// GET /api/status) are published with Hub.PublishSticky.
+const (
+	EventState    = "state"    // sticky: pipeline state
+	EventCamera   = "camera"   // sticky: camera model and limits
+	EventStream   = "stream"   // sticky: H.264 encoder (re)started
+	EventMetadata = "metadata" // sticky: per-frame camera metadata
+	EventStats    = "stats"    // sticky: helper frame counters
+	EventError    = "error"    // asynchronous camera error
+	EventDrop     = "drop"     // frames this viewer lost
+)
+
 // Message is one encoded browser message. Wire holds header+payload and is
 // shared read-only between viewers.
 type Message struct {
 	Type  uint8
 	Flags uint8
+	Event string // event name, for TypeEvent
 	Wire  []byte
 }
 
@@ -53,13 +67,21 @@ func NewVideo(m *proto.VideoMsg) *Message {
 	return encode(TypeVideo, m.Flags&(FlagKey|FlagConfig), m.WallUS, m.Payload)
 }
 
-// NewEvent builds an event message; v is marshalled to JSON.
-func NewEvent(v any) *Message {
-	b, err := json.Marshal(v)
+// NewEvent builds an event message: the JSON object of fields plus
+// "event": name. fields may be nil.
+func NewEvent(name string, fields map[string]any) *Message {
+	obj := map[string]any{}
+	for k, v := range fields {
+		obj[k] = v
+	}
+	obj["event"] = name
+	b, err := json.Marshal(obj)
 	if err != nil {
 		b = []byte(`{"event":"error","message":"marshal failed"}`)
 	}
-	return encode(TypeEvent, 0, uint64(time.Now().UnixMicro()), b)
+	m := encode(TypeEvent, 0, uint64(time.Now().UnixMicro()), b)
+	m.Event = name
+	return m
 }
 
 // Keepalive returns an empty keepalive message.

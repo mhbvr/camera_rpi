@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -38,10 +39,9 @@ type Session struct {
 
 	notes chan *proto.Notification
 
-	done      chan struct{}
-	closeOnce sync.Once
-	errMu     sync.Mutex
-	err       error
+	// ctx ends with the session; its cause says why (Err).
+	ctx    context.Context
+	cancel context.CancelCauseFunc
 }
 
 func newSession(ctl, video net.Conn, onVideo VideoHandler, logger *log.Logger) *Session {
@@ -51,8 +51,9 @@ func newSession(ctl, video net.Conn, onVideo VideoHandler, logger *log.Logger) *
 		log:     logger,
 		pending: map[int64]chan *proto.Incoming{},
 		notes:   make(chan *proto.Notification, 256),
-		done:    make(chan struct{}),
 	}
+	s.ctx, s.cancel = context.WithCancelCause(context.Background())
+	context.AfterFunc(s.ctx, func() { ctl.Close(); video.Close() })
 	go s.readCtl()
 	go s.readVideo(onVideo)
 	return s
@@ -63,36 +64,22 @@ func newSession(ctl, video net.Conn, onVideo VideoHandler, logger *log.Logger) *
 func (s *Session) Notifications() <-chan *proto.Notification { return s.notes }
 
 // Done is closed when the session ends.
-func (s *Session) Done() <-chan struct{} { return s.done }
+func (s *Session) Done() <-chan struct{} { return s.ctx.Done() }
 
-// Err returns why the session ended.
-func (s *Session) Err() error {
-	s.errMu.Lock()
-	defer s.errMu.Unlock()
-	return s.err
-}
+// Err returns why the session ended (nil while it runs).
+func (s *Session) Err() error { return context.Cause(s.ctx) }
 
 // Close ends the session and closes both connections.
 func (s *Session) Close() { s.fail(ErrClosed) }
 
-func (s *Session) fail(err error) {
-	s.closeOnce.Do(func() {
-		s.errMu.Lock()
-		s.err = err
-		s.errMu.Unlock()
-		close(s.done)
-		s.ctl.Close()
-		s.video.Close()
-	})
-}
+// fail ends the session with err; the first reason wins.
+func (s *Session) fail(err error) { s.cancel(err) }
 
 // Call sends a request and waits for its response. A JSON-RPC error is
 // returned as *proto.RPCError. result may be nil.
 func (s *Session) Call(ctx context.Context, method string, params, result any) error {
-	select {
-	case <-s.done:
+	if s.ctx.Err() != nil {
 		return ErrClosed
-	default:
 	}
 	id := s.nextID.Add(1)
 	ch := make(chan *proto.Incoming, 1)
@@ -131,20 +118,16 @@ func (s *Session) Call(ctx context.Context, method string, params, result any) e
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("helper: %s: %w", method, ctx.Err())
-	case <-s.done:
+	case <-s.ctx.Done():
 		return ErrClosed
 	}
 }
 
 func (s *Session) readCtl() {
 	defer close(s.notes)
-	lr := proto.NewLineReader(s.ctl)
-	for {
-		line, err := lr.ReadLine()
-		if err != nil {
-			s.fail(fmt.Errorf("ctl read: %w", err))
-			return
-		}
+	sc := proto.NewLineScanner(s.ctl)
+	for sc.Scan() {
+		line := sc.Bytes()
 		if len(line) == 0 {
 			continue
 		}
@@ -165,7 +148,7 @@ func (s *Session) readCtl() {
 			n := &proto.Notification{JSONRPC: m.JSONRPC, Method: m.Method, Params: m.Params}
 			select {
 			case s.notes <- n:
-			case <-s.done:
+			case <-s.ctx.Done():
 				return
 			default:
 				if m.Method != proto.NoteMetadata && m.Method != proto.NoteStats {
@@ -176,6 +159,11 @@ func (s *Session) readCtl() {
 			s.log.Printf("helper: unexpected ctl message: %s", line)
 		}
 	}
+	err := sc.Err()
+	if err == nil {
+		err = io.EOF
+	}
+	s.fail(fmt.Errorf("ctl read: %w", err))
 }
 
 func (s *Session) readVideo(onVideo VideoHandler) {

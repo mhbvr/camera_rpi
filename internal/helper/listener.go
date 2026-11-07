@@ -2,7 +2,6 @@ package helper
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -75,14 +74,21 @@ func (l *Listener) Close() error {
 }
 
 // Accept waits for the next helper: a ctl connection followed (within 10 s)
-// by a video connection. It returns when ctx is cancelled.
+// by a video connection. When ctx ends, the listeners are closed and Accept
+// returns ctx.Err(); ctx is the server's lifetime.
 func (l *Listener) Accept(ctx context.Context, onVideo VideoHandler) (*Session, error) {
+	stop := context.AfterFunc(ctx, func() { l.Close() })
+	defer stop()
 	for {
-		ctl, err := acceptCtx(ctx, l.ctl, 0)
+		ctl, err := l.ctl.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, err
 		}
-		video, err := acceptCtx(ctx, l.video, 10*time.Second)
+		_ = l.video.SetDeadline(time.Now().Add(10 * time.Second))
+		video, err := l.video.Accept()
 		if err != nil {
 			ctl.Close()
 			if ctx.Err() != nil {
@@ -92,34 +98,5 @@ func (l *Listener) Accept(ctx context.Context, onVideo VideoHandler) (*Session, 
 			continue
 		}
 		return newSession(ctl, video, onVideo, l.log), nil
-	}
-}
-
-var errTimeout = errors.New("accept timeout")
-
-// acceptCtx accepts with cancellation (polling the deadline every 500 ms).
-// timeout 0 means no timeout.
-func acceptCtx(ctx context.Context, ln *net.UnixListener, timeout time.Duration) (net.Conn, error) {
-	var end time.Time
-	if timeout > 0 {
-		end = time.Now().Add(timeout)
-	}
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if !end.IsZero() && time.Now().After(end) {
-			return nil, errTimeout
-		}
-		_ = ln.SetDeadline(time.Now().Add(500 * time.Millisecond))
-		c, err := ln.Accept()
-		if err == nil {
-			return c, nil
-		}
-		var ne net.Error
-		if errors.As(err, &ne) && ne.Timeout() {
-			continue
-		}
-		return nil, err
 	}
 }

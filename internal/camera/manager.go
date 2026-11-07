@@ -22,18 +22,21 @@ var ErrNoCamera = errors.New("camera helper not connected")
 // Options configures a Manager.
 type Options struct {
 	ConfigPath  string // where the config is persisted
-	CapturesDir string // where snapshots are written
+	CapturesDir string // where the helper writes snapshots; files live only until read (use a RAM-backed dir)
 	HFlip       bool
 	VFlip       bool
 	Log         *log.Logger
-	MJPEG       *stream.FrameHub // MJPEG fallback viewers (may be nil)
 }
 
 // Manager owns the configuration and drives the helper session. All helper
 // operations are serialised.
+//
+// Locks: opMu is held for a whole helper operation (it may wait for the
+// helper); mu guards the fields below it and is only held briefly.
 type Manager struct {
-	opt Options
-	hub *stream.Hub
+	opt    Options
+	hub    *stream.Hub      // H.264 and events
+	frames *stream.FrameHub // MJPEG fallback viewers
 
 	opMu sync.Mutex // serialises helper operations
 
@@ -41,9 +44,12 @@ type Manager struct {
 	cfg   Config
 	sess  *helper.Session
 	hello *proto.Hello
-	state string
 
-	mjpegWanted bool // at least one MJPEG viewer
+	mjpegWanted bool          // at least one MJPEG viewer
+	mjpegSync   chan struct{} // signalled when mjpegWanted changes (capacity 1)
+
+	lastStem string // capture names: IMG_<time>, with _1, _2 … within one second (opMu)
+	nameSeq  int
 }
 
 // NewManager returns a manager starting from cfg.
@@ -51,10 +57,16 @@ func NewManager(cfg Config, hub *stream.Hub, opt Options) *Manager {
 	if opt.Log == nil {
 		opt.Log = log.Default()
 	}
-	m := &Manager{opt: opt, hub: hub, cfg: cfg}
+	m := &Manager{opt: opt, hub: hub, cfg: cfg, frames: stream.NewFrameHub(), mjpegSync: make(chan struct{}, 1)}
+	m.frames.OnCount = m.mjpegViewers
+	m.removeCaptureFiles()
 	m.publishState("waiting", "waiting for camera helper")
 	return m
 }
+
+// Frames returns the hub of MJPEG fallback viewers. Its viewer count
+// switches the helper's MJPEG encoder on and off.
+func (m *Manager) Frames() *stream.FrameHub { return m.frames }
 
 // Config returns the current configuration.
 func (m *Manager) Config() Config {
@@ -63,22 +75,12 @@ func (m *Manager) Config() Config {
 	return m.cfg
 }
 
-// State returns the last known pipeline state.
-func (m *Manager) State() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.state
-}
-
 func (m *Manager) publishState(state, detail string) {
-	m.mu.Lock()
-	m.state = state
-	m.mu.Unlock()
-	ev := map[string]any{"event": "state", "state": state}
+	ev := map[string]any{"state": state}
 	if detail != "" {
 		ev["detail"] = detail
 	}
-	m.hub.PublishSticky("state", stream.NewEvent(ev))
+	m.hub.PublishSticky(stream.NewEvent(stream.EventState, ev))
 }
 
 // OnVideo handles video messages from the helper (passed to
@@ -92,30 +94,30 @@ func (m *Manager) OnVideo(msg *proto.VideoMsg) {
 		if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 			m.opt.Log.Printf("camera: bad stream_start: %v", err)
 		}
-		ev["event"] = "stream"
 		m.hub.ResetSession()
-		m.hub.PublishSticky("stream", stream.NewEvent(ev))
+		m.hub.PublishSticky(stream.NewEvent(stream.EventStream, ev))
 		m.opt.Log.Printf("camera: stream_start %s", msg.Payload)
 	case proto.VideoStreamEnd:
 		m.opt.Log.Printf("camera: stream_end %s", msg.Payload)
 	case proto.VideoJPEG:
-		if m.opt.MJPEG != nil {
-			m.opt.MJPEG.Publish(msg.Payload)
-		}
+		m.frames.Publish(msg.Payload)
 	}
 }
 
-// MJPEGViewers is the FrameHub.OnCount hook: it starts the helper's MJPEG
-// encoder when the first fallback viewer connects and stops it after the
-// last one leaves.
-func (m *Manager) MJPEGViewers(n int) {
+// mjpegViewers is the FrameHub.OnCount hook. When MJPEG viewers appear or
+// all leave, it signals the session loop (RunSession), which starts or stops
+// the helper's MJPEG encoder. Quick changes coalesce into one signal.
+func (m *Manager) mjpegViewers(n int) {
 	m.mu.Lock()
 	want := n > 0
 	changed := want != m.mjpegWanted
 	m.mjpegWanted = want
 	m.mu.Unlock()
 	if changed {
-		go m.syncMJPEG(context.Background())
+		select {
+		case m.mjpegSync <- struct{}{}:
+		default: // a signal is already pending; syncMJPEG reads the latest state
+		}
 	}
 }
 
@@ -128,19 +130,23 @@ func (m *Manager) syncMJPEG(ctx context.Context) {
 
 func (m *Manager) syncMJPEGLocked(ctx context.Context) {
 	m.mu.RLock()
-	sess, want, cfg := m.sess, m.mjpegWanted, m.cfg.MJPEG
+	sess, want, cfg := m.sess, m.mjpegWanted, m.cfg
 	m.mu.RUnlock()
 	if sess == nil {
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	p := proto.SetMJPEGParams{Enabled: want, Bitrate: cfg.Bitrate, Skip: cfg.Skip}
+	p := proto.SetMJPEGParams{Enabled: want, Bitrate: cfg.MJPEG.Bitrate, Skip: cfg.MJPEG.Skip, FrameRate: EncoderFrameRate(cfg.Controls)}
 	if err := sess.Call(cctx, proto.MethodSetMJPEG, p, nil); err != nil {
 		m.opt.Log.Printf("camera: set_mjpeg %+v: %v", p, err)
 		return
 	}
-	m.opt.Log.Printf("camera: MJPEG fallback encoder %s", map[bool]string{true: "on", false: "off"}[want])
+	if want {
+		m.opt.Log.Printf("camera: MJPEG fallback encoder on")
+	} else {
+		m.opt.Log.Printf("camera: MJPEG fallback encoder off")
+	}
 }
 
 // RunSession drives one helper session until it ends: wait for hello, send
@@ -206,6 +212,8 @@ func (m *Manager) RunSession(ctx context.Context, sess *helper.Session) error {
 				return sess.Err()
 			}
 			m.handleNotification(n)
+		case <-m.mjpegSync:
+			m.syncMJPEG(ctx)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -215,13 +223,11 @@ func (m *Manager) RunSession(ctx context.Context, sess *helper.Session) error {
 // publishCamera sends a sticky "camera" event with the camera model and the
 // sensor's analogue gain limit (from libcamera's control ranges).
 func (m *Manager) publishCamera(h *proto.Hello) {
-	ev := map[string]any{"event": "camera", "model": h.Camera.Model, "impl": h.Impl, "impl_version": h.ImplVersion}
-	if ci, ok := h.Camera.Controls["AnalogueGain"]; ok {
-		if max, ok := ci.MaxFloat(); ok {
-			ev["sensor_max_gain"] = max
-		}
+	ev := map[string]any{"model": h.Camera.Model, "impl": h.Impl, "impl_version": h.ImplVersion}
+	if max, ok := h.Camera.Controls["AnalogueGain"].MaxFloat(); ok {
+		ev["sensor_max_gain"] = max
 	}
-	m.hub.PublishSticky("camera", stream.NewEvent(ev))
+	m.hub.PublishSticky(stream.NewEvent(stream.EventCamera, ev))
 }
 
 func (m *Manager) wantMJPEG() bool {
@@ -250,12 +256,12 @@ func (m *Manager) handleNotification(n *proto.Notification) {
 		m.publishState(p.State, p.Detail)
 	case proto.NoteMetadata:
 		// Sticky: new viewers and GET /api/status get the latest values.
-		m.hub.PublishSticky("metadata", stream.NewEvent(map[string]any{"event": "metadata", "data": n.Params}))
+		m.hub.PublishSticky(stream.NewEvent(stream.EventMetadata, map[string]any{"data": n.Params}))
 	case proto.NoteStats:
-		m.hub.PublishSticky("stats", stream.NewEvent(map[string]any{"event": "stats", "data": n.Params}))
+		m.hub.PublishSticky(stream.NewEvent(stream.EventStats, map[string]any{"data": n.Params}))
 	case proto.NoteError:
 		m.opt.Log.Printf("camera: helper error: %s", n.Params)
-		m.hub.Publish(stream.NewEvent(map[string]any{"event": "error", "data": n.Params}))
+		m.hub.Publish(stream.NewEvent(stream.EventError, map[string]any{"data": n.Params}))
 	default:
 		m.opt.Log.Printf("camera: unknown notification %q", n.Method)
 	}
@@ -335,46 +341,81 @@ func (m *Manager) callApply(ctx context.Context, sess *helper.Session, hello *pr
 	return nil
 }
 
+// Capture is a snapshot JPEG, held in memory.
+type Capture struct {
+	Name     string // download name: IMG_YYYYMMDD_HHMMSS.jpg
+	JPEG     []byte
+	Width    int
+	Height   int
+	TimingMS map[string]float64 // helper timings (capture, encode)
+}
+
 // Snapshot captures a JPEG from the live main stream. quality 0 means the
-// configured quality.
-func (m *Manager) Snapshot(ctx context.Context, quality int) (proto.SnapshotResult, error) {
+// configured quality. The helper writes the JPEG to CapturesDir; it is read
+// into memory and the file is deleted at once, so nothing accumulates on the
+// Pi.
+func (m *Manager) Snapshot(ctx context.Context, quality int) (Capture, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	m.mu.RLock()
 	sess, cfg := m.sess, m.cfg
 	m.mu.RUnlock()
-	var res proto.SnapshotResult
 	if sess == nil {
-		return res, ErrNoCamera
+		return Capture{}, ErrNoCamera
 	}
 	if quality == 0 {
 		quality = cfg.Still.Quality
 	}
-	if err := rangeI("quality", quality, Limits.QualityMin, Limits.QualityMax); err != nil {
-		return res, err
+	if err := FieldByPath("still.quality").Check(float64(quality)); err != nil {
+		return Capture{}, err
 	}
 	dir, err := filepath.Abs(m.opt.CapturesDir)
 	if err != nil {
-		return res, err
+		return Capture{}, err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return res, err
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return Capture{}, err
 	}
-	base := uniqueBase(dir, time.Now())
+	stem := m.captureStem(time.Now())
+	base := filepath.Join(dir, stem)   // the helper writes base.jpg (via base.jpg.tmp)
+	defer os.Remove(base + ".jpg.tmp") // left behind if the helper failed mid-write
+	defer os.Remove(base + ".jpg")
+
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	err = sess.Call(cctx, proto.MethodSnapshot, proto.SnapshotParams{Path: base, Quality: quality}, &res)
-	return res, err
+	var res proto.SnapshotResult
+	if err := sess.Call(cctx, proto.MethodSnapshot, proto.SnapshotParams{Path: base, Quality: quality}, &res); err != nil {
+		return Capture{}, err
+	}
+	jpeg, err := os.ReadFile(base + ".jpg") // our own path, not the one the helper reports
+	if err != nil {
+		return Capture{}, err
+	}
+	return Capture{Name: stem + ".jpg", JPEG: jpeg, Width: res.File.Width, Height: res.File.Height, TimingMS: res.TimingMS}, nil
 }
 
-func uniqueBase(dir string, t time.Time) string {
-	stem := filepath.Join(dir, "IMG_"+t.Format("20060102_150405"))
-	base := stem
-	for i := 1; ; i++ {
-		if _, err := os.Stat(base + ".jpg"); os.IsNotExist(err) {
-			return base
+// captureStem returns IMG_YYYYMMDD_HHMMSS, with _1, _2 … for further
+// captures within the same second. Called with opMu held.
+func (m *Manager) captureStem(t time.Time) string {
+	stem := "IMG_" + t.Format("20060102_150405")
+	if stem != m.lastStem {
+		m.lastStem, m.nameSeq = stem, 0
+		return stem
+	}
+	m.nameSeq++
+	return fmt.Sprintf("%s_%d", stem, m.nameSeq)
+}
+
+// removeCaptureFiles deletes capture files left in CapturesDir by a crash.
+// Only capture names are touched, so CapturesDir may be a shared directory.
+func (m *Manager) removeCaptureFiles() {
+	for _, pattern := range []string{"IMG_*.jpg", "IMG_*.jpg.tmp"} {
+		files, _ := filepath.Glob(filepath.Join(m.opt.CapturesDir, pattern))
+		for _, f := range files {
+			if err := os.Remove(f); err == nil {
+				m.opt.Log.Printf("camera: removed leftover capture %s", f)
+			}
 		}
-		base = fmt.Sprintf("%s_%d", stem, i)
 	}
 }
 

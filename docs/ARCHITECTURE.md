@@ -62,7 +62,7 @@ for snapshots and `lores` for video. Three pipelines use them:
  camhelper.py (Python, Picamera2)                                 camweb (Go)                                clients
  ────────────────────────────────                                 ───────────                                ───────
 
-                ┌─ main  YUV 2028×1520 ─▶ snapshot (copy + JPEG) ─▶ file in captures/ ─────────────────────▶ POST /api/capture   download
+                ┌─ main  YUV 2028×1520 ─▶ snapshot (copy + JPEG) ─▶ JPEG file in RAM ─────────────────────▶ POST /api/capture   download
                 │                          on request, stream keeps running
  IMX477 ─▶ ISP ─┤
                 │                       ┌─▶ H264Encoder (HW) ══╗               ┌─▶ stream.Hub ───────────┬─▶ /stream        page (WebCodecs)
@@ -89,8 +89,10 @@ for snapshots and `lores` for video. Three pipelines use them:
   cannot decode H.264 (§5.3). It does not affect the H.264 stream (spike 0.10).
 - **Snapshot (on request).** `POST /api/capture` → `snapshot` over `ctl.sock`
   → the helper copies the next `main` frame (2028×1520), encodes the JPEG in a
-  thread, writes it to `<data>/captures/`, and camweb returns the file. Video
-  keeps running.
+  thread and writes it to the captures directory (RAM by default,
+  `/dev/shm/camweb-captures`); camweb reads it into memory, deletes the file at
+  once and returns the JPEG. Nothing is stored on the SD card. Video keeps
+  running.
 - **Control and events** (not drawn): settings go from `camera.Manager` to
   the helper over `ctl.sock` (`configure`, `set_controls`, `set_encoder`,
   `set_mjpeg`); the helper's `state`, `metadata` and `stats` notifications go
@@ -177,9 +179,9 @@ Packages (`internal/`):
 |---|---|
 | `proto` | helper protocol types: video framing, JSON-RPC 2.0 messages |
 | `helper` | socket listener, session (RPC calls matched by id, video reader goroutine), supervisor (spawn, restart with backoff) |
-| `camera` | `Config` model, `Limits`, validation, `Schema`, `Diff`, libcamera control mapping, `Manager` (drives the session), persistence |
+| `camera` | `Config` model, settings schema (ranges, validation), `Diff`, libcamera control mapping, `Manager` (drives the session), persistence |
 | `stream` | `Hub` (H.264 + events fan-out, drop-to-keyframe), `FrameHub` (MJPEG, latest frame wins), browser wire format |
-| `h264` | NAL scanning, SPS → codec string |
+| `h264` | NAL scanning and access-unit splitting for the fake helper (the server does not parse H.264) |
 | `web` | HTTP server, REST handlers, template, static JS/CSS |
 
 ### 4.1 Configuration
@@ -187,22 +189,26 @@ Packages (`internal/`):
   (reconfigure), `encoder` (encoder restart), `controls` (live; a frame-rate
   change also restarts the encoder), `still` (per capture), `mjpeg` (fallback
   encoder). Every field: [HARDWARE.md §4](HARDWARE.md#4-settings-reference).
-- `POST /api/config` merges a partial document, validates it (Go-side
-  `Limits` plus the camera's own gain and shutter maxima from `hello`), diffs
+- `POST /api/config` merges a partial document, validates it (the
+  settings schema plus the camera's own gain and shutter maxima from `hello`), diffs
   it against the current one and sends the least disruptive helper calls:
   `set_controls`, then `set_encoder` or `configure`.
 - Saved to `<data>/config.json`; applied after every `hello`, so it survives
   helper and server restarts.
-- `GET /api/schema` publishes the same ranges for other clients; a test keeps
-  it identical to validation.
+- The schema (`internal/camera/schema.go`) is the only definition of ranges
+  and allowed values: validation checks against it, `GET /api/schema`
+  publishes it, and the page template reads its form ranges from it.
 
 ### 4.2 Fan-out and backpressure (`stream.Hub`)
-- One encoded stream, N clients, each with a bounded queue (30 messages ≈ 1 s)
-  filled by a non-blocking publish.
+- One encoded stream, N clients, each with its own queue filled by a
+  non-blocking publish. Up to 30 video frames (≈ 1 s) are queued per client;
+  events are always queued (a client that stops reading entirely is
+  disconnected after 256 queued events and gets the current state again when
+  it reconnects).
 - A new client, or a new encoder session (`stream_start`), waits for the next
   keyframe.
-- **Drop-to-keyframe**: when a client's queue is full, it loses everything up
-  to the next keyframe and gets a `drop` event. Latency stays bounded on slow
+- **Drop-to-keyframe**: when a client's video queue is full, it loses video up
+  to the next keyframe and gets a `drop` event. Events are never dropped. Latency stays bounded on slow
   links. This is the only latency control; the browser does not skip frames.
 - The kernel send buffer is kept small (`SetWriteBuffer(256 KiB)` via
   `http.Server.ConnContext`) so a backlog lands in the hub queue, where it can
@@ -210,13 +216,16 @@ Packages (`internal/`):
 - Sticky events: the latest `state`, `camera`, `stream`, `metadata` and
   `stats` are replayed to each new client and served by `GET /api/status`.
 - `/stream`, `/stream.h264` and `/api/events` are all hub clients (events-only
-  clients skip video).
+  clients skip video) and share one send loop (`serveHub` in
+  `internal/web/streams.go`); messages queued together go out in one flush.
 
 ### 4.3 MJPEG (`stream.FrameHub`)
 "Latest frame wins": each client has a one-frame slot, so a slow client skips
-frames and never falls behind. The client count drives the helper's MJPEG
-encoder (`set_mjpeg`): on with the first client, off after the last, re-enabled
-when a new helper session starts.
+frames and never falls behind. `camera.Manager` owns the hub; its client
+count drives the helper's MJPEG encoder (`set_mjpeg`): on with the first
+client, off after the last, re-enabled when a new helper session starts.
+Changes are handled in the session loop, so quick connects and disconnects
+collapse into one call.
 
 ## 5. Streaming to the browser
 
@@ -308,7 +317,7 @@ glass-to-glass is measured by filming an on-screen millisecond clock.
 |---|---|
 | Python GIL: a snapshot's JPEG encode delays the encoder output thread | measured (spike 0.5): callback interval p95 34.5 → 43 ms, no dropped frames. Accepted; a subprocess encoder is the fix if needed |
 | No helper-side queue: if Go stops reading `video.sock`, the encoder blocks | Go reads it in a dedicated goroutine that only hands frames to the non-blocking hub; 1 MiB `SO_SNDBUF` absorbs hiccups |
-| Picamera2 API differences between versions | the helper probes optional arguments (`profile`, `framerate`) and accepts extra `outputframe` args |
+| Picamera2 API differences between versions | Picamera2 ≥ 0.3.19 required; the helper accepts extra `outputframe` args and handles the Pi 5 libav encoder arguments |
 | TCP delay build-up over the internet | drop-to-keyframe, small send buffer; WebRTC is the upgrade path |
 | WebCodecs needs a secure context | built-in TLS, SSH forward or HTTPS tunnel; the page explains it and falls back to MJPEG |
 | Hardware assumptions (sensor mode, sizes, tuning tables, encoder quirks) | concentrated in `internal/camera/config.go` and the helper; see [HW_SPECIFIC.md](HW_SPECIFIC.md) |
@@ -324,7 +333,7 @@ internal/proto/    helper protocol: video framing, JSON-RPC 2.0 types
 internal/helper/   sockets, session, supervisor
 internal/camera/   config model, limits, schema, libcamera mapping, Manager
 internal/stream/   Hub, FrameHub, browser wire format
-internal/h264/     NAL/SPS helpers
+internal/h264/     H.264 helpers for the fake helper
 internal/web/      HTTP server, REST API, template, static JS/CSS
 spike/             hardware spike script (docs/SPIKE.md)
 deploy/            systemd unit
@@ -335,7 +344,7 @@ docs/              this documentation
 
 | Layer | How |
 |---|---|
-| Go packages | unit tests (`make test`: `go vet`, `go test -race`), including HTTP handler tests for every endpoint and a schema-vs-validation test |
+| Go packages | unit tests (`make test`: `go vet`, `go test -race`), including HTTP handler tests for every endpoint and a test that the schema covers every config field |
 | helper protocol, Go side | tests with an in-process fake helper over real Unix sockets |
 | Python helper | `camhelper/test_camhelper.py` (framing, dispatcher, JPEG colour round trip, encoder rate control and its fallback) on a fake Picamera2 (`camhelper/fake/`) |
 | end to end without a Pi | `make run-fake` (camweb + `cmd/fakecam` replaying `testdata/test.h264`) or `make run-fake-py` (camweb + the real `camhelper.py` on the fake Picamera2), checked in headless Chromium |

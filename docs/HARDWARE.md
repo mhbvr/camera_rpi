@@ -207,8 +207,8 @@ firmware's rate control, MJPEG included, uses the frame rate it is given.
 
 All settings live in one JSON document ([`GET/POST /api/config`](REST_API.md#config)),
 persisted in `<data>/config.json` and re-applied whenever the helper
-(re)connects. Ranges are in [`GET /api/schema`](REST_API.md#schema) and in
-`internal/camera/config.go` (`Limits`); the mapping to libcamera controls is in
+(re)connects. Ranges are defined once, in the schema
+(`internal/camera/schema.go`, published as [`GET /api/schema`](REST_API.md#schema)); the mapping to libcamera controls is in
 `internal/camera/controls.go`.
 
 | Setting | Range (default) | libcamera / Picamera2 | Applied by | Details |
@@ -268,8 +268,13 @@ without interrupting the video**:
 - The YUV is limited range (Rec709); the helper expands it to full range
   before encoding (with 32-bit arithmetic: 16-bit overflowed and turned bright
   areas black).
-- The file is written as `<name>.jpg.tmp`, renamed, returned to the client
-  and kept in `<data>/captures/IMG_YYYYMMDD_HHMMSS.jpg`.
+- The helper writes `IMG_YYYYMMDD_HHMMSS.jpg` (via `.jpg.tmp`) into the
+  captures directory; camweb reads it into memory and deletes it at once,
+  then sends it to the client. Nothing accumulates on the Pi.
+- The captures directory (`-captures`) defaults to `/dev/shm/camweb-captures`,
+  which is in RAM, so a capture causes no SD card writes. (`/tmp` is on the SD
+  card on Raspberry Pi OS Bookworm; it is RAM only from Debian 13 on.)
+  Leftover capture files from a crash are removed at startup.
 
 Not implemented: 12 MP capture (needs a mode switch and a short pause) and DNG
 raw ([HELPER_API.md §7](HELPER_API.md#7-future-extensions-reserved-not-in-v1)).
@@ -376,7 +381,7 @@ brighter image: lower the frame rate (15 fps allows the normal profile's
 ### 8.2 Manual mode
 - `AeEnable` is a wrapper for `ExposureTimeMode`/`AnalogueGainMode`
   ([ipa_base.cpp#L1103-L1112](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1103-L1112));
-  camweb sends the two modes when the camera has them (spike 0.1).
+  camweb sends the two modes (spike 0.1) together with `AeEnable`.
 - Manual values are ignored while auto is on
   ([#L979-L997](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L979-L997),
   [#L1003-L1020](https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1003-L1020)).

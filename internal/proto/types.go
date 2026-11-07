@@ -143,9 +143,10 @@ type SetEncoderResult struct {
 
 // SetMJPEGParams are the params of "set_mjpeg" (MJPEG fallback encoder).
 type SetMJPEGParams struct {
-	Enabled bool `json:"enabled"`
-	Bitrate int  `json:"bitrate"`
-	Skip    int  `json:"skip"` // encode every skip-th frame
+	Enabled   bool    `json:"enabled"`
+	Bitrate   int     `json:"bitrate"`
+	Skip      int     `json:"skip"`      // encode every skip-th frame
+	FrameRate float64 `json:"framerate"` // camera frame rate; the encoder runs at framerate / skip
 }
 
 // SnapshotParams are the params of "snapshot".

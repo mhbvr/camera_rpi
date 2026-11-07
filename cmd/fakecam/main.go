@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"log"
@@ -75,13 +76,9 @@ func main() {
 	f.notify(proto.NoteState, proto.StateParams{State: "idle"})
 	go f.statsLoop()
 
-	lr := proto.NewLineReader(f.ctl)
-	for {
-		line, err := lr.ReadLine()
-		if err != nil {
-			logger.Printf("ctl closed: %v", err)
-			return
-		}
+	sc := proto.NewLineScanner(f.ctl)
+	for sc.Scan() {
+		line := sc.Bytes()
 		m, err := proto.ParseIncoming(line)
 		if err != nil || !m.IsRequest() {
 			logger.Printf("bad request: %s", line)
@@ -100,6 +97,7 @@ func main() {
 			return
 		}
 	}
+	logger.Printf("ctl closed: %v", sc.Err())
 }
 
 func dialRetry(path string) (net.Conn, error) {
@@ -433,9 +431,19 @@ func (f *fake) snapshot(p proto.SnapshotParams) (any, *proto.RPCError) {
 	}, nil
 }
 
+// helloParams describes the camera like the real helper does for the HQ
+// camera (controls, ranges and enum names from spike 0.1).
 func helloParams() proto.Hello {
 	ctl := func(min, max, def string) proto.ControlInfo {
 		return proto.ControlInfo{Min: json.RawMessage(min), Max: json.RawMessage(max), Default: json.RawMessage(def)}
+	}
+	enum := func(names ...string) proto.ControlInfo {
+		c := ctl("0", fmt.Sprint(len(names)-1), "0")
+		c.Values = map[string]int{}
+		for i, n := range names {
+			c.Values[n] = i
+		}
+		return c
 	}
 	return proto.Hello{
 		Proto: proto.ProtoVersion, Impl: "fakecam", ImplVersion: "1", Libcamera: "none",
@@ -448,14 +456,18 @@ func helloParams() proto.Hello {
 				{Size: proto.Size{4056, 3040}, BitDepth: 12, FPS: 10},
 			},
 			Controls: map[string]proto.ControlInfo{
-				"AeEnable": ctl("false", "true", "true"), "ExposureTime": ctl("31", "667234896", "20000"),
+				"AeEnable": ctl("false", "true", "true"), "ExposureTime": ctl("74", "694422939", "20000"),
 				"AnalogueGain": ctl("1.0", "22.26", "1.0"), "ExposureValue": ctl("-8.0", "8.0", "0.0"),
-				"AeMeteringMode": ctl("0", "3", "0"), "AeExposureMode": ctl("0", "3", "0"),
-				"AwbEnable": ctl("false", "true", "true"), "AwbMode": ctl("0", "7", "0"),
-				"ColourGains": ctl("0.0", "32.0", "null"), "Brightness": ctl("-1.0", "1.0", "0.0"),
+				"ExposureTimeMode": enum("Auto", "Manual"), "AnalogueGainMode": enum("Auto", "Manual"),
+				"AeMeteringMode": enum("CentreWeighted", "Spot", "Matrix", "Custom"),
+				"AeExposureMode": enum("Normal", "Short", "Long", "Custom"),
+				"AwbEnable":      ctl("false", "true", "null"),
+				"AwbMode":        enum("Auto", "Incandescent", "Tungsten", "Fluorescent", "Indoor", "Daylight", "Cloudy", "Custom"),
+				"ColourGains":    ctl("0.0", "32.0", "null"), "Brightness": ctl("-1.0", "1.0", "0.0"),
 				"Contrast": ctl("0.0", "32.0", "1.0"), "Saturation": ctl("0.0", "32.0", "1.0"),
-				"Sharpness": ctl("0.0", "16.0", "1.0"), "NoiseReductionMode": ctl("0", "4", "0"),
-				"FrameDurationLimits": ctl("8333", "667244877", "null"),
+				"Sharpness":           ctl("0.0", "16.0", "1.0"),
+				"NoiseReductionMode":  enum("Off", "Fast", "HighQuality", "Minimal", "ZSL"),
+				"FrameDurationLimits": ctl("57502", "694434742", "null"),
 			},
 		},
 		Features: []string{"snapshot", "metadata", "set_encoder", "mjpeg"},

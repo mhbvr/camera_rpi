@@ -63,15 +63,14 @@ func startFake(t *testing.T, l *helper.Listener) *fakeCam {
 		b, _ := proto.MarshalLine(v)
 		ctl.Write(b)
 	}
-	write(proto.Notification{JSONRPC: "2.0", Method: "hello", Params: json.RawMessage(`{"proto":1,"impl":"fake","camera":{"model":"imx477"}}`)})
+	hello := testHello()
+	hello.Proto, hello.Impl, hello.Camera.Model = proto.ProtoVersion, "fake", "imx477"
+	helloJSON, _ := json.Marshal(hello)
+	write(proto.Notification{JSONRPC: "2.0", Method: "hello", Params: helloJSON})
 	go func() {
-		lr := proto.NewLineReader(ctl)
-		for {
-			line, err := lr.ReadLine()
-			if err != nil {
-				return
-			}
-			m, _ := proto.ParseIncoming(line)
+		sc := proto.NewLineScanner(ctl)
+		for sc.Scan() {
+			m, _ := proto.ParseIncoming(sc.Bytes())
 			f.record(m)
 			res := json.RawMessage(`{}`)
 			switch m.Method {
@@ -141,8 +140,9 @@ func TestManagerFlow(t *testing.T) {
 	// new viewers get the sticky "camera" event (exposure profile info for the UI)
 	sub := hub.Subscribe()
 	gotCamera := false
-	for len(sub.C) > 0 {
-		if msg := <-sub.C; strings.Contains(string(msg.Wire[stream.HeaderSize:]), `"event":"camera"`) {
+	msgs, _ := sub.Take()
+	for _, msg := range msgs {
+		if strings.Contains(string(msg.Payload()), `"event":"camera"`) {
 			gotCamera = true
 		}
 	}
@@ -207,13 +207,16 @@ func TestManagerFlow(t *testing.T) {
 
 	// snapshot
 	res, err := m.Snapshot(ctx, 0)
-	if err != nil || res.File.Width != 2028 {
+	if err != nil || res.Width != 2028 || string(res.JPEG) != "jpeg" || !strings.HasPrefix(res.Name, "IMG_") {
 		t.Fatalf("snapshot %+v %v", res, err)
 	}
 	var sp proto.SnapshotParams
 	_ = json.Unmarshal(f.last().Params, &sp)
 	if sp.Quality != 95 || filepath.Dir(sp.Path) != filepath.Join(dir, "captures") {
 		t.Fatalf("snapshot params %+v", sp)
+	}
+	if left, _ := os.ReadDir(filepath.Join(dir, "captures")); len(left) != 0 {
+		t.Fatalf("capture file not deleted: %v", left)
 	}
 	// a second snapshot in the same second gets a unique name
 	if _, err := m.Snapshot(ctx, 80); err != nil {
@@ -246,9 +249,8 @@ func TestManagerMJPEG(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	frames := stream.NewFrameHub()
-	m := NewManager(Defaults(), stream.NewHub(8), Options{ConfigPath: filepath.Join(dir, "c.json"), Log: logger, MJPEG: frames})
-	frames.OnCount = m.MJPEGViewers
+	m := NewManager(Defaults(), stream.NewHub(8), Options{ConfigPath: filepath.Join(dir, "c.json"), Log: logger})
+	frames := m.Frames()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -273,7 +275,10 @@ func TestManagerMJPEG(t *testing.T) {
 	}
 
 	sub := frames.Subscribe() // first viewer → encoder on
-	waitFor(t, func() bool { p, ok := lastMJPEG(); return ok && p.Enabled && p.Bitrate == 8_000_000 && p.Skip == 2 })
+	waitFor(t, func() bool {
+		p, ok := lastMJPEG()
+		return ok && p.Enabled && p.Bitrate == 8_000_000 && p.Skip == 2 && p.FrameRate == 30
+	})
 
 	// JPEG frames from the helper reach the viewer
 	m.OnVideo(&proto.VideoMsg{Type: proto.VideoJPEG, Payload: []byte{0xff, 0xd8}})
@@ -305,7 +310,24 @@ func TestManagerMJPEG(t *testing.T) {
 	if !resent {
 		t.Fatal("fps change did not re-send set_mjpeg")
 	}
+	if p, _ := lastMJPEG(); p.FrameRate != 20 {
+		t.Fatalf("set_mjpeg after fps change: %+v", p)
+	}
 
 	frames.Unsubscribe(sub) // last viewer gone → encoder off
 	waitFor(t, func() bool { p, _ := lastMJPEG(); return !p.Enabled })
+}
+
+func TestLeftoverCapturesRemoved(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"IMG_20261107_010101.jpg", "IMG_20261107_010102.jpg.tmp", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	NewManager(Defaults(), stream.NewHub(8), Options{ConfigPath: filepath.Join(dir, "c.json"), CapturesDir: dir, Log: log.New(io.Discard, "", 0)})
+	left, _ := os.ReadDir(dir)
+	if len(left) != 1 || left[0].Name() != "notes.txt" {
+		t.Fatalf("left in captures dir: %v", left)
+	}
 }

@@ -27,7 +27,8 @@ import (
 func main() {
 	var (
 		listen     = flag.String("listen", ":8080", "HTTP listen address")
-		dataDir    = flag.String("data", "./data", "data directory (config.json, captures/)")
+		dataDir    = flag.String("data", "./data", "data directory (config.json)")
+		captures   = flag.String("captures", "", "directory for snapshot files while they are downloaded; each is deleted at once (default: RAM, "+defaultCapturesDir()+")")
 		runtimeDir = flag.String("runtime-dir", "", "directory for the helper sockets (default $XDG_RUNTIME_DIR/camweb or <data>/run)")
 		mode       = flag.String("helper", "spawn", "spawn: start and supervise the helper; external: only listen for one")
 		helperCmd  = flag.String("helper-cmd", "", "helper command (default: python3 <embedded camhelper.py>); --ctl/--video are appended")
@@ -74,17 +75,13 @@ func main() {
 	defer stop()
 
 	hub := stream.NewHub(30)
-	frames := stream.NewFrameHub() // MJPEG fallback viewers
 	mgr := camera.NewManager(cfg, hub, camera.Options{
-		MJPEG:       frames,
 		ConfigPath:  cfgPath,
-		CapturesDir: filepath.Join(*dataDir, "captures"),
+		CapturesDir: capturesDir(*captures),
 		HFlip:       *hflip,
 		VFlip:       *vflip,
 		Log:         logger,
 	})
-
-	frames.OnCount = mgr.MJPEGViewers
 
 	lis, err := helper.Listen(*runtimeDir, logger)
 	if err != nil {
@@ -133,7 +130,7 @@ func main() {
 		}
 	}()
 
-	ws := web.New(mgr, hub, frames, logger)
+	ws := web.New(mgr, hub, logger)
 	ws.CORSOrigin = *corsOrigin
 	srv := &http.Server{
 		Addr:              *listen,
@@ -159,7 +156,7 @@ func main() {
 	<-ctx.Done()
 	logger.Printf("shutting down")
 	hub.Close() // ends /stream responses
-	frames.Close()
+	mgr.Frames().Close()
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(sctx)
@@ -182,4 +179,22 @@ func helperArgs(cmd, python, runtimeDir string) ([]string, error) {
 		return nil, err
 	}
 	return []string{python, script}, nil
+}
+
+// capturesDir returns the snapshot directory: flag value or the default.
+func capturesDir(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	return defaultCapturesDir()
+}
+
+// defaultCapturesDir is a RAM-backed directory, so snapshots cause no SD card
+// writes. /dev/shm is tmpfs on every Raspberry Pi OS version; /tmp is on the
+// SD card on Bookworm (Debian 12), so it is only the fallback.
+func defaultCapturesDir() string {
+	if fi, err := os.Stat("/dev/shm"); err == nil && fi.IsDir() {
+		return "/dev/shm/camweb-captures"
+	}
+	return filepath.Join(os.TempDir(), "camweb-captures")
 }

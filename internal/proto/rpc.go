@@ -3,7 +3,6 @@ package proto
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 )
@@ -100,40 +99,12 @@ func ParseIncoming(line []byte) (*Incoming, error) {
 // MaxLine is the maximum length of one control message.
 const MaxLine = 1 << 20
 
-// ErrLineTooLong is returned by LineReader for oversize lines.
-var ErrLineTooLong = errors.New("proto: control line too long")
-
-// LineReader reads newline-delimited messages with a size limit.
-type LineReader struct {
-	r   *bufio.Reader
-	max int
-}
-
-// NewLineReader wraps r.
-func NewLineReader(r io.Reader) *LineReader {
-	return &LineReader{r: bufio.NewReaderSize(r, 64<<10), max: MaxLine}
-}
-
-// ReadLine returns the next line without the trailing newline.
-func (l *LineReader) ReadLine() ([]byte, error) {
-	var line []byte
-	for {
-		chunk, err := l.r.ReadSlice('\n')
-		if len(line)+len(chunk) > l.max {
-			return nil, ErrLineTooLong
-		}
-		line = append(line, chunk...)
-		if err == bufio.ErrBufferFull {
-			continue
-		}
-		if err != nil {
-			if err == io.EOF && len(line) > 0 {
-				return nil, io.ErrUnexpectedEOF
-			}
-			return nil, err
-		}
-		return line[:len(line)-1], nil
-	}
+// NewLineScanner returns a scanner over newline-delimited control messages.
+// Lines longer than MaxLine stop it with bufio.ErrTooLong.
+func NewLineScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), MaxLine)
+	return sc
 }
 
 // MarshalLine encodes v as one JSON line.
