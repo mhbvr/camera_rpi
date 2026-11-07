@@ -249,9 +249,10 @@ func (m *Manager) handleNotification(n *proto.Notification) {
 		_ = json.Unmarshal(n.Params, &p)
 		m.publishState(p.State, p.Detail)
 	case proto.NoteMetadata:
-		m.hub.Publish(stream.NewEvent(map[string]any{"event": "metadata", "data": n.Params}))
+		// Sticky: new viewers and GET /api/status get the latest values.
+		m.hub.PublishSticky("metadata", stream.NewEvent(map[string]any{"event": "metadata", "data": n.Params}))
 	case proto.NoteStats:
-		m.hub.Publish(stream.NewEvent(map[string]any{"event": "stats", "data": n.Params}))
+		m.hub.PublishSticky("stats", stream.NewEvent(map[string]any{"event": "stats", "data": n.Params}))
 	case proto.NoteError:
 		m.opt.Log.Printf("camera: helper error: %s", n.Params)
 		m.hub.Publish(stream.NewEvent(map[string]any{"event": "error", "data": n.Params}))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M0 hardware spike for camera_rpi (docs/PLAN.md, M0).
+"""M0 hardware spike for camera_rpi (docs/SPIKE.md).
 
 Run on the Raspberry Pi 4 with the HQ camera, with nothing else using the
 camera (stop camweb first):
@@ -10,7 +10,7 @@ camera (stop camweb first):
 Prints Markdown; paste the output into docs/SPIKE.md. Images from the "sizes"
 experiment are written to ./spike_out/.
 
-Experiments (PLAN.md M0 numbering):
+Experiments (numbering as in docs/SPIKE.md):
   info     0.1  sensor modes, controls, properties, enum names, colour space
   encode   0.2-0.5  one AU per callback? keyframes/SPS, timestamp meaning,
            capture-to-callback latency, snapshots while encoding (drops,

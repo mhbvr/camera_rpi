@@ -1,5 +1,5 @@
 // Command fakecam is a fake camera helper for development without a Pi. It
-// speaks docs/PROTOCOL.md and replays a recorded H.264 stream in a loop.
+// speaks docs/HELPER_API.md and replays a recorded H.264 stream in a loop.
 //
 //	camweb -helper-cmd "go run ./cmd/fakecam"
 package main

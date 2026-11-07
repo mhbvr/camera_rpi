@@ -1,6 +1,6 @@
 // Command camweb serves a low-latency web UI for a Raspberry Pi camera. It
 // runs the camera helper (camhelper.py, Picamera2) and talks to it over Unix
-// sockets (docs/PROTOCOL.md).
+// sockets (docs/HELPER_API.md).
 package main
 
 import (
@@ -36,6 +36,7 @@ func main() {
 		vflip      = flag.Bool("vflip", false, "flip the image vertically (with -hflip: rotate 180°)")
 		tlsCert    = flag.String("tls-cert", "", "serve HTTPS with this certificate (PEM); see `make cert`")
 		tlsKey     = flag.String("tls-key", "", "private key (PEM) for -tls-cert")
+		corsOrigin = flag.String("cors-origin", "", "allow a UI served from this origin to use the API (Access-Control-Allow-Origin; \"*\" = any)")
 	)
 	flag.Parse()
 	logger := log.New(os.Stderr, "", log.LstdFlags|log.Lmicroseconds)
@@ -132,9 +133,11 @@ func main() {
 		}
 	}()
 
+	ws := web.New(mgr, hub, frames, logger)
+	ws.CORSOrigin = *corsOrigin
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           web.New(mgr, hub, frames, logger).Handler(),
+		Handler:           ws.Handler(),
 		ConnContext:       web.ConnContext,
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig:         tlsConfig,

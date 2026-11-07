@@ -8,7 +8,7 @@ import (
 	"io"
 )
 
-// JSON-RPC 2.0 error codes (PROTOCOL.md §3.1).
+// JSON-RPC 2.0 error codes (HELPER_API.md §3.1).
 const (
 	CodeParseError     = -32700
 	CodeInvalidRequest = -32600

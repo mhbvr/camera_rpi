@@ -11,7 +11,7 @@ import (
 	"github.com/mhbvr/camera_rpi/internal/proto"
 )
 
-// Fixed pipeline geometry (DESIGN.md §3.1): one sensor mode, 2×2 binned,
+// Fixed pipeline geometry (HARDWARE.md §2): one sensor mode, 2×2 binned,
 // full field of view. To be confirmed by the M0 spike.
 var (
 	SensorSize     = proto.Size{2028, 1520}

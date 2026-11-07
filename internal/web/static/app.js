@@ -193,7 +193,7 @@ function showMeta(md) {
   if (md.FocusFoM != null) $('#focus-val').textContent = Math.round(md.FocusFoM);
 }
 
-// ---------- explanations (docs/DESIGN.md §3.5-§3.10) ----------
+// ---------- explanations (docs/HARDWARE.md §7-§12) ----------
 // The UI does not read the camera tuning file. Popups explain the behaviour
 // in general and name the tuning parameter (e.g. rpi.agc → exposure_modes)
 // that sets the actual values for the camera in use.

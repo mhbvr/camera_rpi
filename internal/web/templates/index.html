@@ -114,7 +114,7 @@
             Focus in good light, and press <i>Lock current</i> first so exposure
             stays fixed while you turn the ring.</li>
         </ul>
-        <p class="muted">Details: docs/DESIGN.md §3.5 ·
+        <p class="muted">Details: docs/HARDWARE.md §7 ·
           <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/libcamera/control_ids_core.yaml#L657-L668" target="_blank" rel="noopener">libcamera definition</a> ·
           <a href="https://github.com/raspberrypi/libcamera/blob/9fe1678b8ad5fbae875942b55b58ade23014194c/src/ipa/rpi/common/ipa_base.cpp#L1641-L1663" target="_blank" rel="noopener">how it is computed</a></p>
         <button type="button" popovertarget="focus-info" popovertargetaction="hide">Close</button>
@@ -173,7 +173,7 @@
 </main>
 <!-- Info popups (HTML popover API). They explain behaviour in general and name
      the parameter in the camera's libcamera tuning file that sets the actual
-     values (e.g. rpi.agc → exposure_modes). Background: docs/DESIGN.md §3.5-§3.10. -->
+     values (e.g. rpi.agc → exposure_modes). Background: docs/HARDWARE.md §7-§12. -->
 <div id="info-exposure" popover class="popover">
   <h3>How exposure works</h3>
   <p><b>Auto:</b> each frame, the auto-exposure algorithm (<code>rpi.agc</code>)
@@ -188,7 +188,7 @@
   <p class="muted">Parameter names in these popups refer to the camera's
     libcamera tuning file. For the HQ camera on a Pi 4 that is usually
     <code>/usr/share/libcamera/ipa/rpi/vc4/imx477.json</code>; libcamera logs the
-    path as "Using tuning file" (see the camweb log). Details: docs/DESIGN.md §3.6</p>
+    path as "Using tuning file" (see the camweb log). Details: docs/HARDWARE.md §8</p>
   <button type="button" popovertarget="info-exposure" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-fps" popover class="popover">
@@ -253,7 +253,7 @@
     can raise or lower exposure, for example to keep some pixels bright. In
     manual mode metering has no effect.</p>
   <p class="muted">Zone layout from the Raspberry Pi tuning guide, Figure 9 (sizes
-    approximate). Details: docs/DESIGN.md §3.8</p>
+    approximate). Details: docs/HARDWARE.md §10</p>
   <button type="button" popovertarget="info-metering" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-profile" popover class="popover">
@@ -269,7 +269,7 @@
     <li><b>long</b> usually allows the longest shutter, which only helps if the
       frame rate is low enough.</li>
   </ul>
-  <p class="muted">Details: docs/DESIGN.md §3.6</p>
+  <p class="muted">Details: docs/HARDWARE.md §8</p>
   <button type="button" popovertarget="info-profile" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-readout" popover class="popover">
@@ -309,7 +309,7 @@
       y_target</code>) and auto white balance's priors (<code>rpi.awb →
       priors</code>) depend on lux.</li>
   </ul>
-  <p class="muted">Details: docs/DESIGN.md §3.7</p>
+  <p class="muted">Details: docs/HARDWARE.md §9</p>
   <button type="button" popovertarget="info-lux" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-image" popover class="popover">
@@ -328,7 +328,7 @@
     They <b>do not change exposure</b>: no extra light reaches the sensor and no
     hidden detail is recovered. For a brighter exposure use EV, shutter or
     gain.</p>
-  <p class="muted">Details: docs/DESIGN.md §3.9</p>
+  <p class="muted">Details: docs/HARDWARE.md §11</p>
   <button type="button" popovertarget="info-image" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-brightness" popover class="popover">
@@ -342,7 +342,7 @@
       scene use EV, shutter or gain.</li>
   </ul>
   <p class="muted">Applied by <code>rpi.contrast</code> on top of
-    <code>rpi.contrast → gamma_curve</code>. Details: docs/DESIGN.md §3.9</p>
+    <code>rpi.contrast → gamma_curve</code>. Details: docs/HARDWARE.md §11</p>
   <button type="button" popovertarget="info-brightness" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-contrast" popover class="popover">
@@ -360,7 +360,7 @@
       lo_level, lo_max, hi_histogram, hi_level, hi_max</code>. The UI cannot
       change it.</li>
   </ul>
-  <p class="muted">Base curve: <code>rpi.contrast → gamma_curve</code>. Details: docs/DESIGN.md §3.9</p>
+  <p class="muted">Base curve: <code>rpi.contrast → gamma_curve</code>. Details: docs/HARDWARE.md §11</p>
   <button type="button" popovertarget="info-contrast" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-saturation" popover class="popover">
@@ -374,7 +374,7 @@
       <code>rpi.ccm → ccms</code>. An optional <code>rpi.ccm → saturation</code>
       curve can also vary saturation with lux.</li>
   </ul>
-  <p class="muted">Details: docs/DESIGN.md §3.9</p>
+  <p class="muted">Details: docs/HARDWARE.md §11</p>
   <button type="button" popovertarget="info-saturation" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-sharpness" popover class="popover">
@@ -390,7 +390,7 @@
     <li>Too much sharpening exaggerates noise and edge halos, and costs
       bitrate. It does not affect the focus value.</li>
   </ul>
-  <p class="muted">Details: docs/DESIGN.md §3.9</p>
+  <p class="muted">Details: docs/HARDWARE.md §11</p>
   <button type="button" popovertarget="info-sharpness" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-denoise" popover class="popover">
@@ -419,7 +419,7 @@
       app also uses for the stream. Its effect at our stream size is not
       documented. Compare the settings at high gain.</li>
   </ul>
-  <p class="muted">Mode mapping is in libcamera's Pi 4 code (vc4.cpp). Details: docs/DESIGN.md §3.9</p>
+  <p class="muted">Mode mapping is in libcamera's Pi 4 code (vc4.cpp). Details: docs/HARDWARE.md §11</p>
   <button type="button" popovertarget="info-denoise" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-wb" popover class="popover">
@@ -446,7 +446,7 @@
     now. A large uniform coloured area (a red wall) can fool auto white
     balance; then use a fixed mode, or <i>Lock current</i> while a neutral scene
     is in view.</p>
-  <p class="muted">Parameters: <code>rpi.awb → …</code> in the tuning file. Details: docs/DESIGN.md §3.10</p>
+  <p class="muted">Parameters: <code>rpi.awb → …</code> in the tuning file. Details: docs/HARDWARE.md §12</p>
   <button type="button" popovertarget="info-wb" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-awb-mode" popover class="popover">
@@ -455,7 +455,7 @@
     choose: <code>rpi.awb → modes → &lt;mode&gt; → lo, hi</code> (kelvin). A
     narrow range (e.g. <i>daylight</i>) keeps colours stable when the scene
     content would otherwise mislead it. <i>auto</i> is the widest range.</p>
-  <p class="muted">Details: docs/DESIGN.md §3.10</p>
+  <p class="muted">Details: docs/HARDWARE.md §12</p>
   <button type="button" popovertarget="info-awb-mode" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-wb-gains" popover class="popover">
@@ -469,7 +469,7 @@
     from <code>rpi.awb → ct_curve</code> (rows of T, r, b).</p>
   <p>The easiest way to set them: point at a neutral scene in auto mode, then
     press <i>Lock current</i>.</p>
-  <p class="muted">Details: docs/DESIGN.md §3.10</p>
+  <p class="muted">Details: docs/HARDWARE.md §12</p>
   <button type="button" popovertarget="info-wb-gains" popovertargetaction="hide">Close</button>
 </div>
 <div id="info-mjpeg" popover class="popover">
@@ -489,7 +489,7 @@
     <li>It also works over plain HTTP. Settings, capture and actual values work
       as usual.</li>
   </ul>
-  <p class="muted">Details: docs/DESIGN.md §5.5</p>
+  <p class="muted">Details: docs/ARCHITECTURE.md §5.3</p>
   <button type="button" popovertarget="info-mjpeg" popovertargetaction="hide">Close</button>
 </div>
 <div id="toast" class="toast" hidden></div>

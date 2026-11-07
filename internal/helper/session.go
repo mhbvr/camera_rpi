@@ -1,5 +1,5 @@
 // Package helper manages the camera helper process and its IPC session
-// (docs/PROTOCOL.md): two Unix sockets, JSON-RPC 2.0 on ctl.sock and
+// (docs/HELPER_API.md): two Unix sockets, JSON-RPC 2.0 on ctl.sock and
 // length-prefixed video on video.sock.
 package helper
 

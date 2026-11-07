@@ -1,10 +1,21 @@
-# Camera helper IPC protocol (v1)
+# Helper API: camweb ↔ camera helper (protocol v1)
 
 This is the contract between the Go server (`camweb`) and the camera helper
-(`camhelper.py` now, possibly a C++ binary later). Any helper that implements
-this document is a drop-in replacement. A conformance suite
-(`internal/conformance`, planned before the C++ helper) will test a helper
-against it.
+(`camhelper/camhelper.py` now, possibly a C++ binary later). Any program that
+implements it can replace the helper, for example to support other cameras or
+platforms ([HW_SPECIFIC.md](HW_SPECIFIC.md)).
+
+- Why two Unix sockets and how the helper is started and supervised:
+  [ARCHITECTURE.md §3](ARCHITECTURE.md#3-processes-and-ipc).
+- Implementations in this repository: `camhelper/camhelper.py` (Picamera2),
+  `cmd/fakecam` (Go fake that replays a recorded H.264 file, for development
+  without a Pi), and the Go side in `internal/proto` and `internal/helper`.
+- Try it by hand: start `camweb -helper external`, then run the helper
+  yourself, or connect to `ctl.sock` with `socat - UNIX-CONNECT:ctl.sock`
+  while no helper is connected and type the JSON messages below.
+
+The browser-facing HTTP API is a different document:
+[REST_API.md](REST_API.md).
 
 ## 1. Transport
 
@@ -152,7 +163,8 @@ Restarts only the encoder with new parameters. The video channel gets a new
 
 `framerate` (in `configure.encoder` and `set_encoder`) is the actual frame
 rate. The Pi encoder's rate control assumes 30 fps whatever Picamera2 is told,
-so delivered bitrate = requested × fps / 30 (M0 spike 0.9). The Picamera2
+so delivered bitrate = requested × fps / 30 (spike 0.9,
+[HARDWARE.md §3](HARDWARE.md#3-encoders)). The Picamera2
 helper compensates by handing the encoder `bitrate × 30 / framerate` (capped at
 25 Mbit/s) and reports it as `encoder_bitrate` in `stream_start`. A C++ helper
 that sets the encoder frame rate properly would not need this. Either way, the
@@ -180,7 +192,7 @@ Rules:
 
 #### `set_mjpeg`
 Starts or stops the MJPEG fallback encoder (a second, hardware encoder on the
-same `lores` stream, DESIGN.md §5.5). It keeps running across `configure`
+same `lores` stream, [ARCHITECTURE.md §5.3](ARCHITECTURE.md#53-mjpeg-fallback)). It keeps running across `configure`
 (restarted with the pipeline) until disabled. Frames arrive on `video.sock` as
 type 4.
 ```json
@@ -276,7 +288,21 @@ offset size field
 - New optional methods, params and notification fields can be added without
   a version bump. Receivers **must ignore unknown fields**.
 
-## 6. Future extensions (reserved, not in v1)
+## 6. Writing another helper
+
+- Implement at least `hello`, `configure`, `set_controls`, `set_encoder`,
+  `stop`, `shutdown` and the video types 1–3. List optional parts in
+  `hello.features` (`snapshot`, `metadata`, `mjpeg`).
+- `set_controls` receives **libcamera control names and values**: the server
+  maps its settings to libcamera in `internal/camera/controls.go`. A helper
+  for a non-libcamera camera has to translate them.
+- The sizes in `configure` come from constants in `internal/camera/config.go`
+  (sensor mode, main, stream sizes). They describe the Pi 4 + HQ camera and
+  must be changed for other hardware ([HW_SPECIFIC.md](HW_SPECIFIC.md)).
+- Test with `camweb -helper external` (or `-helper-cmd "your-helper"`; the
+  server appends `--ctl` and `--video`) and the bundled web page.
+
+## 7. Future extensions (reserved, not in v1)
 - **`capture_full`**: a full sensor resolution (4056×3040) capture by
   switching mode inside the helper (stop encoder → `switch_mode` → capture →
   switch back → start encoder). Video pauses briefly and a new `stream_start`

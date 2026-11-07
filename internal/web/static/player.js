@@ -1,6 +1,6 @@
 // Low-latency H.264 player: fetch('/stream') → 16-byte framed messages →
-// WebCodecs VideoDecoder → <canvas>. See docs/DESIGN.md §5.
-// MJPEG fallback (DESIGN.md §5.5): an <img> shows /stream.mjpeg, and
+// WebCodecs VideoDecoder → <canvas>. See docs/ARCHITECTURE.md §5.
+// MJPEG fallback (ARCHITECTURE.md §5.3): an <img> shows /stream.mjpeg, and
 // /stream?video=0 still delivers the events. Used from the start when the
 // browser has no VideoDecoder (mjpegImg), or switched to at runtime when the
 // decoder exists but cannot decode the stream (fallbackImg), as on Firefox

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -205,5 +206,125 @@ func TestStreamEventsOnly(t *testing.T) {
 	hub.Publish(stream.NewEvent(map[string]any{"event": "metadata"}))
 	if _, err := io.ReadFull(res.Body, h); err != nil || h[0] != stream.TypeEvent {
 		t.Fatalf("events-only stream delivered type %d (%v)", h[0], err)
+	}
+}
+
+func TestSchemaAndStatus(t *testing.T) {
+	ts, hub, _ := newTestServer(t)
+	var doc camera.SchemaDoc
+	res, err := http.Get(ts.URL + "/api/schema")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(res.Body).Decode(&doc); err != nil || len(doc.Fields) == 0 {
+		t.Fatalf("schema: %v %+v", err, doc)
+	}
+	res.Body.Close()
+
+	hub.PublishSticky("metadata", stream.NewEvent(map[string]any{"event": "metadata", "data": map[string]any{"Lux": 12.5}}))
+	var st map[string]json.RawMessage
+	res, err = http.Get(ts.URL + "/api/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if err := json.NewDecoder(res.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(st["state"]), `"waiting"`) || !strings.Contains(string(st["metadata"]), `"Lux":12.5`) || st["clients"] == nil {
+		t.Fatalf("status %s", st)
+	}
+}
+
+func TestEventsSSE(t *testing.T) {
+	ts, hub, _ := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/events", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if ct := res.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type %q", ct)
+	}
+	br := bufio.NewReader(res.Body)
+	readEvent := func() map[string]any {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blank, _ := br.ReadString('\n'); blank != "\n" {
+			t.Fatalf("missing blank line after %q", line)
+		}
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(line), "data: ")), &ev); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		return ev
+	}
+	if ev := readEvent(); ev["event"] != "state" {
+		t.Fatalf("first event %v", ev)
+	}
+	for hub.Viewers() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Flags: proto.FlagKey, Payload: []byte{0, 0, 0, 1, 0x65}}))
+	hub.Publish(stream.NewEvent(map[string]any{"event": "stats", "data": map[string]any{"fps": 30}}))
+	if ev := readEvent(); ev["event"] != "stats" {
+		t.Fatalf("want stats (video skipped), got %v", ev)
+	}
+}
+
+func TestRawH264(t *testing.T) {
+	ts, hub, _ := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/stream.h264", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	for hub.Viewers() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	delta := []byte{0, 0, 0, 1, 0x41, 9}
+	key := []byte{0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x65, 2}
+	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Payload: delta})) // skipped: before the first keyframe
+	hub.Publish(stream.NewEvent(map[string]any{"event": "stats"}))                     // skipped: not video
+	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Flags: proto.FlagKey | proto.FlagConfig, Payload: key}))
+	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Payload: delta}))
+	want := append(append([]byte{}, key...), delta...)
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(res.Body, got); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("got %x, want %x (%v)", got, want, err)
+	}
+}
+
+func TestCORS(t *testing.T) {
+	hub := stream.NewHub(8)
+	logger := log.New(io.Discard, "", 0)
+	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger})
+	s := New(mgr, hub, nil, logger)
+	s.CORSOrigin = "https://ui.example"
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	req, _ := http.NewRequest("OPTIONS", ts.URL+"/api/config", nil)
+	req.Header.Set("Origin", "https://ui.example")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNoContent || res.Header.Get("Access-Control-Allow-Origin") != "https://ui.example" {
+		t.Fatalf("preflight %v %v", res.Status, res.Header)
+	}
+	res, _ = http.Get(ts.URL + "/api/config")
+	res.Body.Close()
+	if res.Header.Get("Access-Control-Allow-Origin") != "https://ui.example" {
+		t.Fatalf("GET without CORS header")
 	}
 }
