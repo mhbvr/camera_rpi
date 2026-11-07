@@ -121,7 +121,7 @@ connected stream clients:
 {
   "state":    {"event": "state", "state": "streaming"},
   "camera":   {"event": "camera", "model": "imx477", "impl": "picamera2", "impl_version": "0.3.27", "sensor_max_gain": 22.26},
-  "stream":   {"event": "stream", "session": 1, "codec": "h264", "width": 1440, "height": 1080, "fps": 30, "profile": "high", "bitrate": 6000000, "iperiod": 30, "encoder_bitrate": 6000000},
+  "stream":   {"event": "stream", "session": 1, "codec": "h264", "width": 1440, "height": 1080, "fps": 30, "profile": "high", "bitrate": 6000000, "iperiod": 30, "encoder_bitrate": 6000000, "rate_control": "framerate"},
   "metadata": {"event": "metadata", "data": {"ExposureTime": 33013, "AnalogueGain": 16.0, "Lux": 12.3, "FocusFoM": 1234, "...": "..."}},
   "stats":    {"event": "stats", "data": {"fps": 30, "frames": 12345, "latency_ms": 54.1}},
   "clients":  {"stream": 1, "mjpeg": 0}
@@ -139,7 +139,7 @@ The server forwards these JSON events. Each has an `event` field.
 |---|---|---|
 | `state` | `state`, optional `detail` | on every change. `waiting` (no helper yet), `starting`, `streaming`, `reconfiguring`, `idle`, `helper-restarting`, `error` |
 | `camera` | `model`, `impl`, `impl_version`, `sensor_max_gain` | when a helper connects |
-| `stream` | `session`, `codec`, `width`, `height`, `fps`, `profile`, `bitrate`, `iperiod`, `encoder_bitrate` | when the H.264 encoder (re)starts; video continues from a keyframe |
+| `stream` | `session`, `codec`, `width`, `height`, `fps`, `profile`, `bitrate`, `iperiod`, `framerate`, `encoder_bitrate`, `rate_control` | when the H.264 encoder (re)starts; video continues from a keyframe |
 | `metadata` | `data`: libcamera metadata (`ExposureTime` µs, `AnalogueGain`, `DigitalGain`, `ColourGains`, `ColourTemperature` K, `Lux`, `FrameDuration` µs, `FocusFoM`, `AeState`, `SensorTimestamp`) | about 2 Hz while streaming ([HARDWARE.md §6](HARDWARE.md#6-metadata-and-actual-values)) |
 | `stats` | `data`: `fps`, `frames`, `latency_ms` (sensor → helper socket) | 1 Hz while streaming |
 | `drop` | `dropped`, `total` | `/stream` only: frames this client lost because it fell behind |
@@ -233,10 +233,10 @@ ffmpeg -f h264 -i http://raspberrypi.local:8080/stream.h264 -c copy -t 60 clip.m
 ```
 
 There are no timestamps in a raw stream: players take the frame rate from
-the SPS, which says 30 fps whatever the real rate is
-([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)). If timing
-matters, pass the real rate (`stream.fps` from [status](#status)), for example
-`-framerate 15` before `-i` for ffmpeg/ffplay. After a stream-size change the stream continues with new
+the SPS timing information. The helper gives the encoder the real frame rate,
+so it should be correct ([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps); not checked yet).
+If timing is off, pass the real rate (`stream.fps` from [status](#status)), for
+example `-framerate 15` before `-i` for ffmpeg/ffplay. After a stream-size change the stream continues with new
 SPS/PPS.
 
 ### /stream.mjpeg

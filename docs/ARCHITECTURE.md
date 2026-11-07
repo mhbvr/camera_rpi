@@ -337,7 +337,7 @@ docs/              this documentation
 |---|---|
 | Go packages | unit tests (`make test`: `go vet`, `go test -race`), including HTTP handler tests for every endpoint and a schema-vs-validation test |
 | helper protocol, Go side | tests with an in-process fake helper over real Unix sockets |
-| Python helper | `camhelper/test_camhelper.py` (framing, dispatcher, JPEG colour round trip, bitrate compensation) on a fake Picamera2 (`camhelper/fake/`) |
+| Python helper | `camhelper/test_camhelper.py` (framing, dispatcher, JPEG colour round trip, encoder rate control and its fallback) on a fake Picamera2 (`camhelper/fake/`) |
 | end to end without a Pi | `make run-fake` (camweb + `cmd/fakecam` replaying `testdata/test.h264`) or `make run-fake-py` (camweb + the real `camhelper.py` on the fake Picamera2), checked in headless Chromium |
 | hardware | `spike/m0_spike.py` on the Pi ([SPIKE.md](SPIKE.md)) |
 

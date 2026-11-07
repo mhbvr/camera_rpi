@@ -51,7 +51,7 @@ var Limits = struct {
 	SharpnessMax: 16,
 	WBGainMin:    0.1, WBGainMax: 32,
 	QualityMin: 1, QualityMax: 100,
-	MJPEGBitrateMin: 1_000_000, MJPEGBitrateMax: 25_000_000, // encoder cap (bitrate is compensated for fps/skip)
+	MJPEGBitrateMin: 1_000_000, MJPEGBitrateMax: 25_000_000, // delivered bitrate (the helper sets the encoder's frame rate)
 	MJPEGSkipMax: 10,
 }
 

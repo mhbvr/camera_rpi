@@ -125,6 +125,49 @@ class FramingTest(unittest.TestCase):
         # MJPEG at 30 fps, every 2nd frame -> 15 fps: request 8 Mbit/s, encoder gets 16
         self.assertEqual(camhelper.encoder_bitrate(8_000_000, 30 / 2), 16_000_000)
 
+    def test_make_h264_encoder(self):
+        class Modern:  # Picamera2 with framerate / enable_sps_framerate / profile
+            def __init__(self, bitrate=None, repeat=True, iperiod=None, framerate=None,
+                         enable_sps_framerate=False, profile=None):
+                self.kw = dict(bitrate=bitrate, framerate=framerate, sps=enable_sps_framerate, profile=profile)
+
+        class Old:  # no framerate, no profile
+            def __init__(self, bitrate=None, repeat=True, iperiod=None):
+                self.kw = dict(bitrate=bitrate)
+
+        class Libav:  # Pi 5 software encoder: framerate, but no enable_sps_framerate
+            def __init__(self, bitrate=None, repeat=True, iperiod=30, framerate=30, qp=None, profile=None):
+                self.kw = dict(bitrate=bitrate, framerate=framerate, profile=profile)
+
+        enc, mode, br = camhelper.make_h264_encoder(Modern, 6_000_000, 40, 40.0)
+        self.assertEqual((mode, br), ("framerate", 6_000_000))
+        self.assertEqual(enc.kw, dict(bitrate=6_000_000, framerate=40.0, sps=True, profile="high"))
+        enc, mode, br = camhelper.make_h264_encoder(Libav, 6_000_000, 40, 40.0)
+        self.assertEqual((mode, enc.kw), ("framerate", dict(bitrate=6_000_000, framerate=40.0, profile="high")))
+        enc, mode, br = camhelper.make_h264_encoder(Old, 6_000_000, 40, 40.0)
+        self.assertEqual((mode, br, enc.kw["bitrate"]), ("compensated", 4_500_000, 4_500_000))
+
+    def test_make_mjpeg_encoder(self):
+        class Modern:  # inherits V4L2Encoder's frame-rate attributes
+            def __init__(self, bitrate=None):
+                self.bitrate, self.framerate, self._enable_framerate = bitrate, None, False
+
+        class Old:
+            def __init__(self, bitrate=None):
+                self.bitrate = bitrate
+
+        class Libav:  # Pi 5: framerate argument, no V4L2 attributes
+            def __init__(self, bitrate=None, repeat=True, iperiod=30, framerate=30, qp=None):
+                self.bitrate, self.framerate = bitrate, framerate
+
+        enc, mode, br = camhelper.make_mjpeg_encoder(Modern, 8_000_000, 30.0, 2)
+        self.assertEqual((mode, br, enc.bitrate, enc.framerate, enc._enable_framerate, enc.frame_skip_count),
+                         ("framerate", 8_000_000, 8_000_000, 15.0, True, 2))
+        enc, mode, br = camhelper.make_mjpeg_encoder(Libav, 8_000_000, 30.0, 2)
+        self.assertEqual((mode, enc.bitrate, enc.framerate, enc.frame_skip_count), ("framerate", 8_000_000, 15.0, 2))
+        enc, mode, br = camhelper.make_mjpeg_encoder(Old, 8_000_000, 30.0, 2)
+        self.assertEqual((mode, br, enc.bitrate, enc.frame_skip_count), ("compensated", 16_000_000, 16_000_000, 2))
+
     def test_has_sps(self):
         self.assertTrue(camhelper.has_sps(b"\x00\x00\x00\x01\x67\x64\x00\x28\x00\x00\x01\x68"))
         self.assertFalse(camhelper.has_sps(b"\x00\x00\x00\x01\x65\x88\x84"))

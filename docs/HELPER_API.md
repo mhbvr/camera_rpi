@@ -162,15 +162,16 @@ Restarts only the encoder with new parameters. The video channel gets a new
 ```
 
 `framerate` (in `configure.encoder` and `set_encoder`) is the actual frame
-rate. The Pi encoder's rate control assumes 30 fps unless the frame rate is
-set with `VIDIOC_S_PARM` (the kernel driver's default; Picamera2 sets it only
-with `enable_sps_framerate=True`, [HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)),
-so delivered bitrate = requested × fps / 30 (spike 0.9,
-[HARDWARE.md §3](HARDWARE.md#3-encoders)). The Picamera2
-helper compensates by handing the encoder `bitrate × 30 / framerate` (capped at
-25 Mbit/s) and reports it as `encoder_bitrate` in `stream_start`. A C++ helper
-that sets the frame rate with `VIDIOC_S_PARM` would not need this. Either way, the
-server sends `set_encoder` after any frame-rate change.
+rate, and `bitrate` is the bitrate to deliver. The helper must give the
+encoder both: the Pi's encoders plan bits per frame for 30 fps unless they get
+the frame rate (`VIDIOC_S_PARM`), and then deliver requested × fps / 30
+([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)). The Picamera2 helper passes
+`framerate=…, enable_sps_framerate=True`; on a Picamera2 without these
+arguments it falls back to handing the encoder `bitrate × 30 / framerate`
+(capped at 25 Mbit/s). `stream_start` reports `encoder_bitrate` (what the
+encoder got) and `rate_control` (`framerate` or `compensated`). The server
+sends `set_encoder` after any frame-rate change, because the frame rate is set
+when the encoder starts.
 
 #### `snapshot`
 Captures one frame from the running `main` stream as JPEG **without
@@ -202,9 +203,11 @@ type 4.
 → {"jsonrpc":"2.0","id":6,"result":{"active":true}}
 ```
 `skip` = encode every skip-th camera frame (Picamera2 `frame_skip_count`).
-`bitrate` is the bitrate to deliver; the Picamera2 helper compensates for the
-encoder's 30 fps assumption (`bitrate × 30 / (fps / skip)`, capped at
-25 Mbit/s). The server re-sends `set_mjpeg` after a frame-rate change.
+`bitrate` is the bitrate to deliver. The Picamera2 helper gives the MJPEG
+encoder its frame rate (fps / skip) through the attributes `MJPEGEncoder`
+inherits from `V4L2Encoder`, or falls back to `bitrate × 30 / (fps / skip)`
+([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)). The server re-sends `set_mjpeg` after a frame-rate
+change.
 `active` is false when the camera is not streaming (the encoder then starts
 with the next `configure`).
 
@@ -264,7 +267,7 @@ offset size field
   **Annex-B** format (start codes included). With `repeat=True`, IDR AUs carry
   SPS+PPS (flags bit1). The first AU after `stream_start` **must be an IDR**.
 - **type 2 (stream_start):** JSON payload
-  `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30, "framerate": 30.0, "encoder_bitrate": 6000000}`.
+  `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30, "framerate": 30.0, "encoder_bitrate": 6000000, "rate_control": "framerate"}`.
   Sent whenever the encoder (re)starts. The server resets all viewers to
   "wait for keyframe".
 - **type 3 (stream_end):** JSON `{"session": 3, "reason": "reconfigure"|"encoder"|"stop"|"error"}`.

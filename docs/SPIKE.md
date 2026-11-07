@@ -41,13 +41,12 @@ Conventions in the results:
 | 0.6 | Are the stream sizes applied as requested? | yes, full sensor crop | the sizes in `config.go` |
 | 0.7 | How fast do controls apply? | manual exposure after 10 frames | live controls; fewer buffers = faster |
 | 0.8 | Unix socket cost for a frame | 0.37 ms for 200 KB | sockets, no shared memory |
-| 0.9 | Is the bitrate accurate? | no: delivered = requested × fps / 30 (the driver defaults to 30 fps); compensation fixes it | helper hands the encoder `bitrate × 30 / fps`; `s_parm` rows to test the proper fix |
-| 0.10 | Can MJPEG run next to H.264? | yes, no H.264 drops, +5 % CPU; compensated bitrate within ±10 % | MJPEG fallback; `s_parm` rows to test setting the MJPEG frame rate instead |
+| 0.9 | Is the bitrate accurate? | only if the encoder is told the frame rate: the driver defaults to 30 fps, so otherwise delivered = requested × fps / 30 | helper passes the frame rate (`framerate` + `enable_sps_framerate`); bitrate compensation only as fallback (2026-11-07) |
+| 0.10 | Can MJPEG run next to H.264? | yes, no H.264 drops, +5 % CPU; bitrate within ±10 % once the encoder knows its frame rate | MJPEG fallback; helper sets the MJPEG frame rate (2026-11-07) |
 
 Open follow-ups: visual aspect check of the 0.6 images; glass-to-glass
-latency through camweb; run `limits` and `mjpeg` again for the new `s_parm`
-rows (does telling the driver the real frame rate make the compensation
-unnecessary, for H.264 and for MJPEG?).
+latency through camweb; check that the H.264 SPS now carries the real frame
+rate (`ffprobe` on `/stream.h264` at 15 fps).
 
 ---
 
@@ -241,7 +240,8 @@ rate control assumes 30 fps. See the analysis and the re-run below.
 *Later finding (from the source, HARDWARE.md §3.1):* the kernel driver
 defaults to 30 fps, and Picamera2 passes `framerate=` to the driver only
 together with `enable_sps_framerate=True`, which this run did not set. The
-`limits` experiment now has `s_parm` rows that test that.
+`limits` experiment now has `s_parm` rows that test that; they confirm it
+(run of 2026-11-07).
 
 Bitrate accuracy with and without `framerate=` passed to H264Encoder.
 
@@ -386,3 +386,196 @@ Same setup. Rows marked "compensated" hand the encoder
   against −48 % uncompensated (8 M every 2nd → 4.16).
 - **H.264 is still unaffected:** 29.8 fps, 0 drops, at most +6 % CPU.
 - Spike 0.10 is closed.
+
+---
+
+# Run of 2026-11-07 01:01: telling the encoders the frame rate
+
+Same script with the new `s_parm` rows: the real frame rate is given to the
+encoder (H.264: `framerate=fps, enable_sps_framerate=True`; MJPEG: the
+inherited `framerate` / `_enable_framerate` attributes set to fps / skip),
+with the requested bitrate and no compensation. Background: HARDWARE.md §3.1.
+
+## Analysis of the 2026-11-07 run
+
+**Rate control (the point of this run):**
+
+| Case | none (old default) | compensated | s_parm (frame rate given) |
+|---|---|---|---|
+| H.264 40 fps, 6 M | 8.01 | 6.06 | **6.04** |
+| H.264 40 fps, 12 M | – | 12.02 | **12.06** |
+| H.264 15 fps, 6 M | 3.14 | 6.37 | **6.42** |
+| MJPEG every 2nd (15 fps), 8 M | 4.13 | 7.39 | **7.31** |
+| MJPEG every 3rd (10 fps), 4 M | – | 3.77 | **3.78** |
+| MJPEG every frame (30 fps), 8 M | – | 8.30 | **8.31** |
+
+- **Giving the encoder the frame rate works, for H.264 and for MJPEG.** The
+  `s_parm` rows deliver the same bitrate as the compensated ones, within about
+  1 %. The firmware's rate control (closed source) follows the frame rate from
+  `VIDIOC_S_PARM`, for MJPEG too, so the compensation is not needed.
+- The remaining deviations are the same in both methods, so they are encoder
+  behaviour, not method error: H.264 at 15 fps runs ~6–7 % over (keyframes
+  are a larger share at low frame rates); MJPEG at 15 fps came out −8 % here
+  but +10 % in the previous run (8.76): about ±10 % run to run, depending on
+  the scene.
+- **Action taken:** the helper now passes the frame rate to both encoders and
+  uses the requested bitrate (`make_h264_encoder`, `make_mjpeg_encoder`); the
+  bitrate compensation remains only as a fallback for a Picamera2 without the
+  argument or attributes. `stream_start` reports `rate_control`.
+- CPU: two compensated MJPEG rows show 39–40 % against 25–28 % for the
+  matching `s_parm` rows and for the same rows in the previous run. The
+  encoders do the same work in both, so this is most likely measurement
+  noise (other activity on the Pi during those 6 s); H.264 never dropped a
+  frame.
+
+**Other experiments** agree with the earlier runs:
+- 0.2–0.3: encoder output latency mean 53 ms, p50 52, p95 62 (earlier 60 /
+  53 / 73); request complete p50 35 ms (unchanged). One frame per callback,
+  SPS on every keyframe, 0 dropped frames.
+- 0.4–0.5: snapshot copy 15 ms; JPEG encode 125 ms mean (earlier 94: varies
+  with scene detail); callback interval p95 during snapshots 43 ms (earlier
+  47). Helper CPU 16 % of a core at 30 fps (earlier 24 %).
+- 0.7: manual exposure applied after 9 frames (earlier 10).
+- 0.8: 0.34 ms per 200 KB message.
+
+## Raw results
+
+### 0.1 Camera info
+
+- picamera2 version: `?`
+- libcamera version: `?`
+- properties: `{'Model': 'imx477', 'UnitCellSize': (1550, 1550), 'ScalerCropMaximum': (0, 0, 0, 0)}`
+
+| size | bit depth | fps | crop limits | exposure limits |
+|---|---|---|---|---|
+| (1332, 990) | 10 | 120.5 | (704, 544, 2664, 1980) | (31, 667234896, 20000) |
+| (2028, 1080) | 10 | 74.74 | (8, 456, 4056, 2160) | (47, 674181621, 20000) |
+| (2028, 1520) | 10 | 53.77 | (8, 16, 4056, 3040) | (47, 674181621, 20000) |
+| (4056, 2160) | 10 | 19.58 | (8, 456, 4056, 2160) | (92, 694422939, 20000) |
+| (4056, 3040) | 10 | 14.0 | (8, 16, 4056, 3040) | (92, 694422939, 20000) |
+| (1332, 990) | 12 | 101.68 | (704, 544, 2664, 1980) | (37, 667234896, 20000) |
+| (2028, 1080) | 12 | 62.81 | (8, 456, 4056, 2160) | (56, 674181621, 20000) |
+| (2028, 1520) | 12 | 45.19 | (8, 16, 4056, 3040) | (56, 674181621, 20000) |
+| (4056, 2160) | 12 | 16.39 | (8, 456, 4056, 2160) | (110, 694422939, 20000) |
+| (4056, 3040) | 12 | 11.72 | (8, 16, 4056, 3040) | (110, 694422939, 20000) |
+| (1332, 990) | 8 | 147.91 | (704, 544, 2664, 1980) | (26, 667234896, 20000) |
+| (2028, 1080) | 8 | 92.27 | (8, 456, 4056, 2160) | (38, 674181621, 20000) |
+| (2028, 1520) | 8 | 66.38 | (8, 16, 4056, 3040) | (38, 674181621, 20000) |
+| (4056, 2160) | 8 | 24.32 | (8, 456, 4056, 2160) | (74, 694422939, 20000) |
+| (4056, 3040) | 8 | 17.39 | (8, 16, 4056, 3040) | (74, 694422939, 20000) |
+
+Controls (min, max, default):
+
+- `AeConstraintMode`: (0, 3, 0)
+- `AeEnable`: (False, True, True)
+- `AeExposureMode`: (0, 3, 0)
+- `AeFlickerMode`: (0, 1, 0)
+- `AeFlickerPeriod`: (100, 1000000, None)
+- `AeMeteringMode`: (0, 3, 0)
+- `AnalogueGain`: (1.0, 22.2608699798584, 1.0)
+- `AnalogueGainMode`: (0, 1, 0)
+- `AwbEnable`: (False, True, None)
+- `AwbMode`: (0, 7, 0)
+- `Brightness`: (-1.0, 1.0, 0.0)
+- `CnnEnableInputTensor`: (False, True, False)
+- `ColourCorrectionMatrix`: (0.0, 8.0, None)
+- `ColourGains`: (0.0, 32.0, None)
+- `ColourTemperature`: (100, 100000, None)
+- `Contrast`: (0.0, 32.0, 1.0)
+- `ExposureTime`: (74, 694422939, 20000)
+- `ExposureTimeMode`: (0, 1, 0)
+- `ExposureValue`: (-8.0, 8.0, 0.0)
+- `FrameDurationLimits`: (57502, 694434742, (33333, 33333))
+- `HdrMode`: (0, 4, 0)
+- `NoiseReductionMode`: (0, 4, 0)
+- `Saturation`: (0.0, 32.0, 1.0)
+- `ScalerCrop`: ((8, 16, 64, 64), (8, 16, 4056, 3040), (10, 16, 4053, 3040))
+- `Sharpness`: (0.0, 16.0, 1.0)
+- `StatsOutputEnable`: (False, True, False)
+- `SyncFrames`: (100, 100000, 1000)
+- `SyncMode`: (0, 2, 0)
+
+Enum names:
+
+- `AeMeteringMode`: {'CentreWeighted': 0, 'Spot': 1, 'Matrix': 2, 'Custom': 3}
+- `AeExposureMode`: {'Normal': 0, 'Short': 1, 'Long': 2, 'Custom': 3}
+- `AwbMode`: {'Auto': 0, 'Incandescent': 1, 'Tungsten': 2, 'Fluorescent': 3, 'Indoor': 4, 'Daylight': 5, 'Cloudy': 6, 'Custom': 7}
+- `NoiseReductionMode`: {'Off': 0, 'Fast': 1, 'HighQuality': 2, 'Minimal': 3, 'ZSL': 4}
+- `ExposureTimeMode`: {'Auto': 0, 'Manual': 1}
+- `AnalogueGainMode`: {'Auto': 0, 'Manual': 1}
+
+- video config colour space: `<libcamera.ColorSpace 'Rec709'>`
+- applied main: `{'format': 'YUV420', 'size': (2028, 1520), 'preserve_ar': True, 'stride': 2048, 'framesize': 4669440}`, lores: `{'format': 'YUV420', 'size': (1440, 1080), 'preserve_ar': False, 'stride': 1472, 'framesize': 2384640}`, sensor: `{'bit_depth': 12, 'output_size': (2028, 1520)}`
+
+### 0.2-0.5 Encoding, latency, snapshots while encoding
+
+- outputframe extra args: 2 positional, kwargs []
+- callbacks: 350; callbacks with != 1 picture (should be 0): **0**
+- keyframes: 12; keyframes with SPS: 12; non-key with SPS: 0
+- first callback keyframe: True
+- `timestamp` argument sample: [0, 33324, 66650] (type int)
+- SensorTimestamp sample: [35898315000, 35931639000, 35964965000]
+- timestamp*1000 == SensorTimestamp for 0 of 350 frames
+- sensor timestamp -> outputframe (if monotonic clock): n/a
+- sensor timestamp -> outputframe via encoder.firsttimestamp: mean 52.95 ms, p50 51.73, p95 62.02, max 67.99 (n=350)
+- sensor timestamp -> post_callback: mean 35.81 ms, p50 35.06, p95 42.85, max 47.12 (n=351)
+- callback interval, baseline: mean 33.32 ms, p50 33.32, p95 34.48, max 39.60 (n=217)
+- callback interval during snapshots (GIL impact): mean 33.32 ms, p50 33.31, p95 43.13, max 46.75 (n=102)
+- timestamp gaps > 1.5 frame (dropped frames): **0**
+- snapshot copy (capture_request+copy): mean 14.87 ms, p50 13.53, p95 21.62, max 21.62 (n=10)
+- snapshot JPEG encode 2028x1520: mean 124.88 ms, p50 119.96, p95 176.54, max 176.54 (n=10)
+- process CPU while encoding: 16% of one core
+
+### 0.6 Stream sizes in the 2028x1520 mode
+
+| requested lores | applied lores | stride | main | ScalerCrop | files |
+|---|---|---|---|---|---|
+| (1440, 1080) | (1440, 1080) | 1472 | (2028, 1520) | (8, 16, 4056, 3040) | spike_out/lores_1440x1080.jpg, spike_out/main_1440x1080.jpg |
+| (1024, 768) | (1024, 768) | 1024 | (2028, 1520) | (8, 16, 4056, 3040) | spike_out/lores_1024x768.jpg, spike_out/main_1024x768.jpg |
+| (640, 480) | (640, 480) | 640 | (2028, 1520) | (8, 16, 4056, 3040) | spike_out/lores_640x480.jpg, spike_out/main_640x480.jpg |
+
+Check the images: a circle must stay round in both lores and main.
+
+### 0.7 Controls
+
+- auto exposure: ExposureTime=33013 AnalogueGain=16.0
+- manual ExposureTime=5000 applied after **9** frames
+- back to auto via ExposureTimeMode/AnalogueGainMode = 0: ExposureTime=33013 AnalogueGain=15.753846168518066 (should differ from 5000/2.0 unless the scene matches)
+- FrameDurationLimits -> 50000 at runtime: last FrameDuration values [49992, 49992, 49992, 49992, 49992]
+
+### 0.8 Unix socket hand-off
+
+- 200 KB messages, sender -> reader complete: mean 0.34 ms, p50 0.36, p95 0.40, max 0.61 (n=300)
+
+### 0.9 Encoder limits (1440x1080)
+
+Bitrate accuracy: as requested, with camhelper's compensation (bitrate * 30 / fps), or with the real frame rate given to the driver (s_parm).
+
+| fps | method | requested | delivered fps | Mbit/s | CPU % |
+|---|---|---|---|---|---|
+| 30 | none | 6 M | 30.0 | 6.04 | 32 |
+| 40 | none | 6 M | 39.8 | 8.01 | 27 |
+| 40 | compensated | 6 M | 40.2 | 6.06 | 43 |
+| 40 | compensated | 2 M | 40.0 | 2.02 | 43 |
+| 40 | compensated | 12 M | 40.0 | 12.02 | 43 |
+| 15 | none | 6 M | 15.0 | 3.14 | 11 |
+| 15 | compensated | 6 M | 15.0 | 6.37 | 11 |
+| 40 | s_parm | 6 M | 40.0 | 6.04 | 42 |
+| 40 | s_parm | 12 M | 40.0 | 12.06 | 42 |
+| 15 | s_parm | 6 M | 15.0 | 6.42 | 11 |
+
+### 0.10 MJPEG fallback in parallel with H.264 (1440x1080@30, H.264 6 Mbit/s)
+
+Requested MJPEG bitrate vs. delivered: as requested, with camhelper's compensation (bitrate * 30 / MJPEG fps), or with the MJPEG frame rate given to the driver (s_parm); H.264 must stay at 30 fps with 0 dropped frames.
+
+| MJPEG | H.264 fps | H.264 drops | MJPEG fps | MJPEG Mbit/s | MJPEG KB/frame | CPU % |
+|---|---|---|---|---|---|---|
+| none (H.264 only) | 29.8 | 0 | – | – | – | 21 |
+| 8 M, every 2. | 29.8 | 0 | 14.8 | 4.13 | 35 | 27 |
+| 4 M, every 2., compensated | 29.8 | 0 | 14.8 | 4.12 | 35 | 26 |
+| 8 M, every 2., compensated | 30.0 | 0 | 15.0 | 7.39 | 62 | 40 |
+| 8 M, every 1., compensated | 29.8 | 0 | 29.8 | 8.30 | 35 | 28 |
+| 4 M, every 3., compensated | 30.0 | 0 | 10.0 | 3.77 | 47 | 39 |
+| 8 M, every 2., s_parm | 29.8 | 0 | 14.8 | 7.31 | 62 | 27 |
+| 4 M, every 3., s_parm | 29.8 | 0 | 10.0 | 3.78 | 47 | 25 |
+| 8 M, every 1., s_parm | 29.8 | 0 | 29.8 | 8.31 | 35 | 28 |

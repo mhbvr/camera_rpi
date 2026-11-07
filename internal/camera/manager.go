@@ -301,7 +301,7 @@ func (m *Manager) applyLocked(ctx context.Context, old, next Config) (ApplyKind,
 	m.cfg = next
 	m.mu.Unlock()
 	// Restart the fallback encoder with new settings, or after a frame-rate
-	// change (its bitrate is compensated for the frame rate in the helper).
+	// change (the helper gives the encoder its frame rate, fps / skip).
 	if sess != nil && m.wantMJPEG() &&
 		(old.MJPEG != next.MJPEG || FrameDurationUS(old.Controls) != FrameDurationUS(next.Controls)) {
 		m.syncMJPEGLocked(ctx)
