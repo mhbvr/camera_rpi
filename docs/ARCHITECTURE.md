@@ -36,27 +36,12 @@ Contents:
 ## 1. Components
 
 ```
-                                   Raspberry Pi 4
- ┌──────────────────────────────────────────────────────────────────────────────────┐
- │ camhelper.py (Python, Picamera2)                 camweb (Go, stdlib only)         │
- │ ┌───────────────────────────────────┐           ┌──────────────────────────────┐ │
- │ │ libcamera ─ ISP ─┬─ main  (YUV) ──┼─snapshot─▶│ files in <data>/captures/    │ │
- │ │   IMX477         │                │           │                              │ │
- │ │                  └─ lores (YUV)   │           │  helper.Session              │ │
- │ │                        │          │video.sock │   video reader ──▶ stream.Hub ├─┼─▶ /stream, /stream.h264, /api/events
- │ │       H264Encoder (HW) ┼──────────┼──────────▶│                ──▶ FrameHub  ├─┼─▶ /stream.mjpeg
- │ │       MJPEGEncoder (HW)┘          │ (binary)  │   ctl JSON-RPC               │ │
- │ │                                   │           │        ▲                     │ │
- │ │ control loop (configure,          │ ctl.sock  │  camera.Manager: config,     │ │
- │ │ set_controls, snapshot, …) ◀──────┼───────────┤  validation, diff, persist   │ │
- │ │ metadata, stats, state ───────────┼──────────▶│        ▲                     │ │
- │ └───────────────────────────────────┘(JSON-RPC) │  web.Server (net/http) ◀─────┼─┼─▶ /api/*, the page
- │        ▲ spawned + supervised by camweb         └──────────────────────────────┘ │
- └────────┴─────────────────────────────────────────────────────────────────────────┘
-                                                        │ HTTP(S)
-     Browser: fetch('/stream') → parser → WebCodecs VideoDecoder → <canvas>
-              (MJPEG fallback: <img src="/stream.mjpeg"> + /stream?video=0)
-     Other clients: REST API, SSE events, raw H.264, MJPEG (REST_API.md)
+┌───────────────────────────────┐  ctl.sock: JSON-RPC 2.0   ┌───────────────────────────────┐
+│ camhelper.py                  │◀─────────────────────────▶│ camweb                        │  HTTP(S)
+│ Python, Picamera2, libcamera  │                           │ Go, standard library only     │◀─────────▶ browser page,
+│ camera, ISP, HW encoders,     │  video.sock: framed video │ config, fan-out, REST API,    │            other clients
+│ snapshots                     │──────────────────────────▶│ page; spawns the helper       │
+└───────────────────────────────┘                           └───────────────────────────────┘
 ```
 
 - **camhelper.py** (`camhelper/`, embedded into the camweb binary): opens the
@@ -67,6 +52,50 @@ Contents:
   page and the REST API.
 - **Web page** (`internal/web/`): `html/template` + vanilla JS. Uses only the
   public REST API and streams.
+
+### 1.1 Pipelines
+
+One sensor mode feeds the ISP, which produces two images per frame: `main`
+for snapshots and `lores` for video. Three pipelines use them:
+
+```
+ camhelper.py (Python, Picamera2)                                 camweb (Go)                                clients
+ ────────────────────────────────                                 ───────────                                ───────
+
+                ┌─ main  YUV 2028×1520 ─▶ snapshot (copy + JPEG) ─▶ file in captures/ ─────────────────────▶ POST /api/capture   download
+                │                          on request, stream keeps running
+ IMX477 ─▶ ISP ─┤
+                │                       ┌─▶ H264Encoder (HW) ══╗               ┌─▶ stream.Hub ───────────┬─▶ /stream        page (WebCodecs)
+                │                       │   always             ║               │   drop-to-keyframe      └─▶ /stream.h264   players
+                └─ lores YUV 1440×1080 ─┤                      ╠═ video.sock ═▶┤
+                                        │                      ║ H.264 + JPEG  │
+                                        └─▶ MJPEGEncoder (HW) ═╝               └─▶ stream.FrameHub ────────▶ /stream.mjpeg  fallback <img>
+                                            every n-th frame,                      latest frame wins
+                                            only while needed ◀── set_mjpeg ◀── camera.Manager ◀── MJPEG client count
+```
+
+- **H.264 (main stream, always on while streaming).** The hardware H.264
+  encoder runs on `lores`. Each encoded frame goes over `video.sock` as type 1
+  to `stream.Hub`, which fans it out to `/stream` (the page, decoded with
+  WebCodecs) and `/stream.h264` (players), dropping to the next keyframe for
+  clients that fall behind (§4.2).
+- **MJPEG (fallback, on demand).** A second hardware encoder, `MJPEGEncoder`,
+  runs on the **same `lores` stream** and encodes every n-th frame
+  (`mjpeg.skip`). It runs only while at least one client is connected to
+  `/stream.mjpeg`: `stream.FrameHub` reports its client count to
+  `camera.Manager`, which sends `set_mjpeg {enabled: true|false}` to the
+  helper. Each JPEG goes over `video.sock` as type 4 to `FrameHub`, which keeps
+  only the newest frame per client (§4.3). The page uses it when the browser
+  cannot decode H.264 (§5.3). It does not affect the H.264 stream (spike 0.10).
+- **Snapshot (on request).** `POST /api/capture` → `snapshot` over `ctl.sock`
+  → the helper copies the next `main` frame (2028×1520), encodes the JPEG in a
+  thread, writes it to `<data>/captures/`, and camweb returns the file. Video
+  keeps running.
+- **Control and events** (not drawn): settings go from `camera.Manager` to
+  the helper over `ctl.sock` (`configure`, `set_controls`, `set_encoder`,
+  `set_mjpeg`); the helper's `state`, `metadata` and `stats` notifications go
+  back and are published through `stream.Hub` to `/stream`, `/api/events` and
+  `/api/status`.
 
 ## 2. Division of responsibility
 
