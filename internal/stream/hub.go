@@ -1,6 +1,9 @@
 package stream
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 // Hub distributes messages to subscribers. Publish never blocks: a viewer
 // whose queue is full loses frames until the next keyframe (drop-to-key).
@@ -89,6 +92,21 @@ func (h *Hub) PublishSticky(key string, m *Message) {
 	h.sticky[key] = m
 	h.mu.Unlock()
 	h.Publish(m)
+}
+
+// Payload returns the message payload (the bytes after the header).
+func (m *Message) Payload() []byte { return m.Wire[HeaderSize:] }
+
+// StickyEvents returns the JSON of the latest sticky event per key (for
+// GET /api/status).
+func (h *Hub) StickyEvents() map[string]json.RawMessage {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[string]json.RawMessage, len(h.sticky))
+	for k, m := range h.sticky {
+		out[k] = json.RawMessage(m.Payload())
+	}
+	return out
 }
 
 // ResetSession makes every viewer wait for the next keyframe (called on a

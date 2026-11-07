@@ -1,4 +1,7 @@
-// Package web serves the UI, the video stream and the JSON API.
+// Package web serves the UI, the video streams and the REST API
+// (docs/REST_API.md). Everything the bundled UI does goes through these
+// endpoints (its form ranges are the same data as GET /api/schema), so an
+// alternative interface can do the same.
 package web
 
 import (
@@ -37,6 +40,10 @@ type Server struct {
 	log    *log.Logger
 	tmpl   *template.Template
 	mux    *http.ServeMux
+
+	// CORSOrigin, if set, is sent as Access-Control-Allow-Origin so a UI
+	// served from another origin can use the API ("*" allows any).
+	CORSOrigin string
 }
 
 // New builds the server.
@@ -54,6 +61,10 @@ func New(mgr *camera.Manager, hub *stream.Hub, frames *stream.FrameHub, logger *
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	s.mux.HandleFunc("GET /stream", s.handleStream)
 	s.mux.HandleFunc("GET /stream.mjpeg", s.handleMJPEG)
+	s.mux.HandleFunc("GET /stream.h264", s.handleH264)
+	s.mux.HandleFunc("GET /api/schema", s.handleSchema)
+	s.mux.HandleFunc("GET /api/status", s.handleStatus)
+	s.mux.HandleFunc("GET /api/events", s.handleEvents)
 	s.mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	s.mux.HandleFunc("POST /api/config", s.handlePostConfig)
 	s.mux.HandleFunc("POST /api/config/reset", s.handleReset)
@@ -62,7 +73,27 @@ func New(mgr *camera.Manager, hub *stream.Hub, frames *stream.FrameHub, logger *
 }
 
 // Handler returns the root handler.
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler {
+	if s.CORSOrigin == "" {
+		return s.mux
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", s.CORSOrigin)
+		h.Set("Access-Control-Expose-Headers", "Content-Disposition, X-Capture-Width, X-Capture-Height")
+		if s.CORSOrigin != "*" {
+			h.Add("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions { // preflight
+			h.Set("Access-Control-Allow-Methods", "GET, POST")
+			h.Set("Access-Control-Allow-Headers", "Content-Type")
+			h.Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		s.mux.ServeHTTP(w, r)
+	})
+}
 
 type connKey struct{}
 
@@ -171,10 +202,120 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleH264 serves the raw H.264 Annex-B elementary stream for players such
+// as ffplay, mpv or VLC. It starts at a keyframe (SPS/PPS included) and,
+// like /stream, skips to the next keyframe when the client falls behind.
+func (s *Server) handleH264(w http.ResponseWriter, r *http.Request) {
+	sub := s.hub.Subscribe()
+	defer s.hub.Unsubscribe(sub)
+	h := w.Header()
+	h.Set("Content-Type", "video/h264")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	rc := http.NewResponseController(w)
+	_ = rc.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case m, ok := <-sub.C:
+			if !ok {
+				return
+			}
+			if m.Type != stream.TypeVideo {
+				continue
+			}
+			_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if _, err := w.Write(m.Payload()); err != nil {
+				return
+			}
+			if err := rc.Flush(); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// handleEvents serves the JSON events of /stream (state, camera, stream,
+// metadata, stats, drop, error) as Server-Sent Events, one JSON object per
+// "data:" line. The latest state, camera, stream, metadata and stats events
+// are sent first.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	sub := s.hub.SubscribeEvents()
+	defer s.hub.Unsubscribe(sub)
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	rc := http.NewResponseController(w)
+	_ = rc.Flush()
+	write := func(b []byte) bool {
+		_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err := w.Write(b); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case m, ok := <-sub.C:
+			if !ok {
+				return
+			}
+			if m.Type != stream.TypeEvent {
+				continue
+			}
+			// The payload is single-line JSON (encoding/json escapes newlines).
+			if !write(append(append([]byte("data: "), m.Payload()...), '\n', '\n')) {
+				return
+			}
+		case <-ticker.C:
+			if !write([]byte(": keepalive\n\n")) {
+				return
+			}
+		}
+	}
+}
+
+// statusResponse is the GET /api/status response.
+type statusResponse struct {
+	// Latest event of each kind (see docs/REST_API.md "Events"); absent
+	// until the first one arrives.
+	State    json.RawMessage `json:"state,omitempty"`
+	Camera   json.RawMessage `json:"camera,omitempty"`
+	Stream   json.RawMessage `json:"stream,omitempty"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Stats    json.RawMessage `json:"stats,omitempty"`
+	Clients  struct {
+		Stream int `json:"stream"` // /stream, /stream.h264 and /api/events clients
+		MJPEG  int `json:"mjpeg"`  // /stream.mjpeg clients
+	} `json:"clients"`
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	ev := s.hub.StickyEvents()
+	resp := statusResponse{State: ev["state"], Camera: ev["camera"], Stream: ev["stream"], Metadata: ev["metadata"], Stats: ev["stats"]}
+	resp.Clients.Stream = s.hub.Viewers()
+	if s.frames != nil {
+		resp.Clients.MJPEG = s.frames.Viewers()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleSchema(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, camera.Schema())
+}
+
 // mjpegBoundary separates the parts of the multipart MJPEG stream.
 const mjpegBoundary = "camweb-frame"
 
-// handleMJPEG serves the MJPEG fallback (DESIGN.md §5.5) as
+// handleMJPEG serves the MJPEG fallback (ARCHITECTURE.md §5.3) as
 // multipart/x-mixed-replace for an <img> element. While at least one
 // client is connected, the helper runs a hardware MJPEG encoder; each
 // client gets the newest frame (slow clients skip frames).

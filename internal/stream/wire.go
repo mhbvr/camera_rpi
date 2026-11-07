@@ -1,5 +1,5 @@
 // Package stream fans the encoded video out to browser viewers and defines
-// the browser wire format (DESIGN.md §5.2).
+// the browser wire format (REST_API.md, /stream).
 package stream
 
 import (

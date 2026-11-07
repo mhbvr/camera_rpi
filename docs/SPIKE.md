@@ -1,6 +1,72 @@
-# M0 spike results (2026-11-06 16:14)
+# Hardware spike: measurements on the Pi 4 + HQ camera
+
+Before relying on assumptions about the camera stack, `spike/m0_spike.py`
+measures them on the real hardware. This page keeps the raw output of every
+run, with an explanation of what each experiment checks, how, and what the
+numbers mean for camweb. Background: [HARDWARE.md](HARDWARE.md),
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
+## How to run
+
+Stop camweb first (the spike needs the camera to itself), then on the Pi:
+
+```bash
+python3 spike/m0_spike.py all
+```
+
+or selected experiments (`info`, `encode`, `sizes`, `controls`, `socket`,
+`limits`, `mjpeg`). It prints Markdown (paste it below) and writes test images
+to `./spike_out/`. `make deploy PI=pi@raspberrypi.local` copies the repository
+to the Pi. A run of `all` takes about two minutes.
+
+Conventions in the results:
+- **p50 / p95 / max**: median, 95th percentile and maximum over `n` samples.
+- **CPU %**: CPU time of the spike process (Picamera2 and its threads,
+  including the encoder output thread) as a percentage of **one** core; the
+  Pi 4 has four.
+- **Sensor timestamp**: libcamera's `SensorTimestamp`, the time the sensor
+  started reading out the frame (CLOCK_MONOTONIC, ns).
+- Scene: indoors, dark (auto exposure at 33 ms × gain 16), unless noted.
+
+## Summary
+
+| # | Question | Answer | Consequence in camweb |
+|---|---|---|---|
+| 0.1 | Which sensor modes and controls exist? | 2028×1520 12-bit up to 45.19 fps; `ExposureTimeMode`/`AnalogueGainMode` present | one mode at ≤ 40 fps; manual exposure via the mode controls |
+| 0.2 | Does the encoder hand over whole frames with SPS on keyframes? | yes, 341/341 | one frame per message, no H.264 parser in the helper |
+| 0.2 | What is Picamera2's encoder timestamp? | relative to the first frame | the helper adds `encoder.firsttimestamp` |
+| 0.3 | Camera-side latency | 35 ms to request complete, 53 ms to encoder output (p50) | latency budget, ARCHITECTURE.md §7 |
+| 0.4 | Can we snapshot while encoding? | yes, 0 dropped frames | Capture never stops the stream |
+| 0.5 | Does JPEG encoding in Python disturb the video? | callback p95 35 → 47 ms, no drops | encode in a thread (no subprocess) |
+| 0.6 | Are the stream sizes applied as requested? | yes, full sensor crop | the sizes in `config.go` |
+| 0.7 | How fast do controls apply? | manual exposure after 10 frames | live controls; fewer buffers = faster |
+| 0.8 | Unix socket cost for a frame | 0.37 ms for 200 KB | sockets, no shared memory |
+| 0.9 | Is the bitrate accurate? | no: delivered = requested × fps / 30; compensation fixes it | helper hands the encoder `bitrate × 30 / fps` |
+| 0.10 | Can MJPEG run next to H.264? | yes, no H.264 drops, +5 % CPU; compensated bitrate within ±10 % | MJPEG fallback |
+
+Open follow-ups: visual aspect check of the 0.6 images; glass-to-glass
+latency through camweb.
+
+---
+
+# First run (2026-11-06 16:14)
 
 ## 0.1 Camera info
+
+**What:** dumps what Picamera2 reports: sensor modes (size, bit depth, max
+fps, crop, exposure limits), control ranges (min, max, default), enum names,
+colour space and the stream configuration after alignment.
+**Why:** the server's constants (sensor mode, sizes, limits) and the
+libcamera enum values it sends come from here.
+**Reading:**
+- Every mode exists in 8-, 10- and 12-bit variants; fewer bits = higher fps.
+  camweb uses 2028×1520 12-bit (2×2 binned, full field of view, 45.19 fps).
+- `camera_controls` describes the **last configured mode** (here the
+  `FrameDurationLimits` minimum 57502 µs belongs to the full-res 8-bit mode),
+  so mode-dependent ranges are not used; only the `ExposureTime` and
+  `AnalogueGain` maxima are (they match across modes).
+- `ScalerCropMaximum (0,0,0,0)` in properties is normal before configuration.
+- `picamera2 version: ?` means the version could not be read; not a problem.
 
 - picamera2 version: `?`
 - libcamera version: `?`
@@ -69,6 +135,32 @@ Enum names:
 
 ## 0.2-0.5 Encoding, latency, snapshots while encoding
 
+**What:** streams H.264 at 1440×1080@30 for 8 s through a custom Picamera2
+`Output` that records every encoder callback, then takes 10 snapshots from the
+main stream while encoding continues.
+- **0.2** Does each `outputframe` call carry exactly one frame (one picture)?
+  Do keyframes carry SPS/PPS (`repeat=True`)? What is the `timestamp`
+  argument?
+- **0.3** Latency from the sensor timestamp to the metadata callback (frame
+  processed by the ISP) and to the encoder output.
+- **0.4** Snapshot cost: `capture_request()` + copy of the 2028×1520 YUV
+  buffer, and whether H.264 frames are lost meanwhile (timestamp gaps
+  > 1.5 frame intervals).
+- **0.5** JPEG encode time in a Python thread, and how much it delays the
+  encoder callbacks (the GIL is shared).
+
+**Reading:**
+- "callbacks with != 1 picture: 0" and "keyframes with SPS 12/12": the helper
+  can send each callback as one complete frame, with no parsing and no extra
+  frame of delay.
+- `timestamp` starts at 0 for the first frame; adding
+  `encoder.firsttimestamp` gives the sensor time. The resulting 53 ms p50
+  latency (vs. 35 ms to the metadata callback) means the hardware encode
+  takes about 18 ms; the tail (p95 73 ms) is probably the large keyframes.
+- "callback interval during snapshots p95 46.7 ms" (baseline 35 ms): the JPEG
+  encode delays frames by up to ~12 ms but loses none (0 gaps). Accepted.
+- The helper uses 24 % of one core at 30 fps.
+
 - outputframe extra args: 2 positional, kwargs []
 - callbacks: 341; callbacks with != 1 picture (should be 0): **0**
 - keyframes: 12; keyframes with SPS: 12; non-key with SPS: 0
@@ -88,6 +180,14 @@ Enum names:
 
 ## 0.6 Stream sizes in the 2028x1520 mode
 
+**What:** configures each offered stream size as lores next to the 2028×1520
+main stream and saves one frame of each as JPEG.
+**Why:** lores must have the same aspect ratio as main, and libcamera may
+align sizes; the applied sizes become constants in Go.
+**Reading:** all sizes are applied unchanged (the stride is padded to a
+multiple of 32 or 64 bytes, which the helper handles), and the crop is the full
+sensor. The images still need a visual check (a round object must stay round).
+
 | requested lores | applied lores | stride | main | ScalerCrop | files |
 |---|---|---|---|---|---|
 | (1440, 1080) | (1440, 1080) | 1472 | (2028, 1520) | (8, 16, 4056, 3040) | spike_out/lores_1440x1080.jpg, spike_out/main_1440x1080.jpg |
@@ -98,6 +198,17 @@ Check the images: a circle must stay round in both lores and main.
 
 ## 0.7 Controls
 
+**What:** reads auto-exposure values, switches to manual `ExposureTime=5000`,
+counts frames until the metadata shows it, returns to auto, and changes
+`FrameDurationLimits` while running.
+**Reading:**
+- Auto exposure sits at 33 ms × gain 16: the 30 fps frame time and the
+  profile's gain limit, i.e. the scene was dark (see HARDWARE.md §8).
+- A control change shows up **10 frames** later (~330 ms at 30 fps): the
+  libcamera pipeline depth with 6 buffers. Fewer buffers should shorten it.
+- Returning to auto works through `ExposureTimeMode`/`AnalogueGainMode`, and
+  the frame rate can change without a restart (50 ms → 49992 µs frames).
+
 - auto exposure: ExposureTime=33013 AnalogueGain=16.0
 - manual ExposureTime=5000 applied after **10** frames
 - back to auto via ExposureTimeMode/AnalogueGainMode = 0: ExposureTime=33013 AnalogueGain=15.753846168518066 (should differ from 5000/2.0 unless the scene matches)
@@ -105,9 +216,25 @@ Check the images: a circle must stay round in both lores and main.
 
 ## 0.8 Unix socket hand-off
 
+**What:** sends 300 messages of 200 KB (a large H.264 keyframe) over a Unix
+stream socket from Python to a reader thread and times each until fully
+received.
+**Reading:** 0.37 ms per keyframe-sized message, about 1 % of the 33 ms frame
+interval. Shared memory would save nothing noticeable (ARCHITECTURE.md §3.2).
+
 - 200 KB messages, sender -> reader complete: mean 0.37 ms, p50 0.36, p95 0.43, max 0.96 (n=300)
 
 ## 0.9 Encoder limits (1440x1080)
+
+**What:** encodes 1440×1080 at 30 and 40 fps at several bitrates, with and
+without Picamera2's `framerate=` argument, and measures delivered frame rate,
+bitrate and CPU over 6 s.
+**Why:** to check that the hardware encoder sustains 40 fps and delivers the
+requested bitrate.
+**Reading:** 40 fps is fine, but the bitrate is not: at 40 fps the encoder
+delivers 8.03 Mbit/s for 6 requested (2 → 2.69, 12 → 16.0), with or without
+`framerate=`. Every row fits `delivered = requested × fps / 30`: the encoder's
+rate control assumes 30 fps. See the analysis and the re-run below.
 
 Bitrate accuracy with and without `framerate=` passed to H264Encoder.
 
@@ -123,7 +250,7 @@ Bitrate accuracy with and without `framerate=` passed to H264Encoder.
 
 ---
 
-## Analysis (re-run, 2026-11-06 16:14)
+## Analysis of the first run (2026-11-06 16:14)
 
 Measured on a Raspberry Pi 4 with the HQ camera. The first run (16:02) gave
 the same numbers for 0.1–0.8; this run adds two measurements (marked new).
@@ -164,6 +291,10 @@ reduce the first stage.
 
 ## 0.9 Re-run: bitrate compensation (2026-11-06 18:57)
 
+**What:** after the helper started handing the encoder `bitrate × 30 / fps`,
+the `limits` experiment compares uncompensated and compensated rows at 15, 30
+and 40 fps. "compensated: yes" rows should deliver the requested bitrate.
+
 | fps | compensated | requested | delivered fps | Mbit/s | CPU % |
 |---|---|---|---|---|---|
 | 30 | no | 6 M | 29.8 | 6.15 | 22 |
@@ -187,6 +318,14 @@ latency with camweb.
 ---
 
 ## 0.10 MJPEG fallback in parallel with H.264 (2026-11-06 21:54)
+
+**What:** runs H.264 at 1440×1080@30 (6 Mbit/s) alone, then together with a
+second, hardware `MJPEGEncoder` on the same lores stream, for several MJPEG
+bitrates and frame-skip values (`frame_skip_count`: every n-th frame). For 6 s
+each it measures H.264 frame rate and dropped frames (timestamp gaps), MJPEG
+frame rate, bitrate and frame size, and CPU.
+**Why:** the MJPEG fallback (ARCHITECTURE.md §5.3) must not hurt the main
+H.264 stream, and its bitrate setting should mean what it says.
 
 H.264 1440x1080@30 at 6 Mbit/s, plus a hardware `MJPEGEncoder` on the same
 lores stream.
@@ -217,6 +356,10 @@ lores stream.
   "compensated" should deliver the requested bitrate.
 
 ## 0.10 Re-run: MJPEG bitrate compensation (2026-11-06 22:02)
+
+**What:** the same experiment after the helper started compensating MJPEG for
+its frame rate (`bitrate × 30 / (fps / skip)`); the row without
+"compensated" is the old behaviour, for comparison.
 
 Same setup. Rows marked "compensated" hand the encoder
 `bitrate × 30 / MJPEG fps`, as the helper now does.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """camhelper: Picamera2 camera helper for camweb.
 
-Implements docs/PROTOCOL.md v1:
+Implements docs/HELPER_API.md v1:
   * ctl.sock   - JSON-RPC 2.0, one message per line (server -> requests,
                  helper -> responses and notifications)
   * video.sock - 32-byte big-endian header + one H.264 access unit (Annex-B)
@@ -34,7 +34,7 @@ assert HEADER.size == 32
 T_AU, T_STREAM_START, T_STREAM_END, T_JPEG = 1, 2, 3, 4
 F_KEY, F_CONFIG = 1, 2
 
-# JSON-RPC error codes (PROTOCOL.md §3.1)
+# JSON-RPC error codes (HELPER_API.md §3.1)
 E_PARSE, E_INVALID_REQUEST, E_METHOD_NOT_FOUND, E_INVALID_PARAMS, E_INTERNAL = (
     -32700, -32600, -32601, -32602, -32603)
 E_BUSY, E_NOT_CONFIGURED, E_CAMERA, E_IO = -32001, -32002, -32003, -32004
@@ -218,7 +218,7 @@ class Camera:
         self.metadata_hz = 2.0
         self._last_md = 0.0
         self.video_failed = False
-        # MJPEG fallback (DESIGN.md §5.5): a second, hardware MJPEG encoder on
+        # MJPEG fallback (ARCHITECTURE.md §5.3): a second, hardware MJPEG encoder on
         # the same lores stream, running only while the server asks for it.
         self.mjpeg_enabled = False
         self.mjpeg_params = {"bitrate": 8_000_000, "skip": 2}

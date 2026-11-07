@@ -1,4 +1,4 @@
-// Package proto implements the camera helper IPC protocol (docs/PROTOCOL.md):
+// Package proto implements the camera helper IPC protocol (docs/HELPER_API.md):
 // length-prefixed video messages and JSON-RPC 2.0 control messages.
 package proto
 
