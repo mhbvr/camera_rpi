@@ -145,18 +145,46 @@ told the camera's frame rate unless the application says so:
    be reported in the sequence headers if enable_sps_framerate is set, but
    there's no guarantee that frames will be delivered to the codec at that
    rate!"*). That is why spike 0.9 saw no effect from `framerate=`.
-4. **`MJPEGEncoder` has no frame-rate option at all**
-   ([mjpeg_encoder.py#L12-L20](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/encoders/mjpeg_encoder.py#L12-L20)); Picamera2's
-   comment says only H.264 supports the setting. With `frame_skip_count` the
-   MJPEG encoder sees fps / skip frames per second but still budgets for 30.
+4. **`MJPEGEncoder` has no frame-rate argument**
+   ([mjpeg_encoder.py#L12-L20](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/encoders/mjpeg_encoder.py#L12-L20)). With
+   `frame_skip_count` it sees fps / skip frames per second but budgets for 30.
+
+**Can the MJPEG frame rate be set anyway?** Most likely yes, without new
+code in Picamera2 or the kernel (not yet measured):
+- **Picamera2:** the frame-rate code lives in the shared base class
+  `V4L2Encoder`, not in `H264Encoder`. `MJPEGEncoder` inherits the
+  `framerate` and `_enable_framerate` attributes
+  ([v4l2_encoder.py#L33-L34](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/encoders/v4l2_encoder.py#L33-L34)); if both are set
+  after construction, `_start()` sends `VIDIOC_S_PARM` for MJPEG exactly as for
+  H.264 ([#L95-L103](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/encoders/v4l2_encoder.py#L95-L103)). The attributes exist since
+  Picamera2 0.3.10 (2023), older than `frame_skip_count` (0.3.19), which the
+  helper already needs. `_enable_framerate` is a private attribute, so a future
+  Picamera2 could rename it; the helper would then fall back to compensation.
+- **Kernel:** `vidioc_s_parm` does not check the codec. Picamera2 calls it
+  before buffers are allocated; the driver stores the rate and uses it when it
+  creates the firmware component and sets the output port format, for H.264
+  and MJPEG alike ([#L2037-L2095](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c#L2037-L2095),
+  [#L2756-L2773](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c#L2756-L2773), [#L936-L952](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c#L936-L952)). Same code in
+  the rpi-6.12.y kernel.
+- **Picamera2's comment** (*"Some codecs, such as H264, support this
+  parameter. Our other codecs do not"*) dates from the commit that added the
+  option for H.264
+  ([cf929b3](https://github.com/raspberrypi/picamera2/commit/cf929b31448c00515eb56c466c4135ed0f13afca),
+  Picamera2 0.3.9). That commit describes the frame rate as *"merely a number
+  in the H264 SPS headers"*; it does not mention rate control.
+- **Firmware:** closed source. The MJPEG encoder's bitrate follows the 30 fps
+  default from the port format (spike 0.10), so it very likely follows another
+  value too. `spike/m0_spike.py mjpeg` has `s_parm` rows that set
+  `framerate = fps / skip` with the requested bitrate, to confirm it.
 
 Consequences:
 - The compensation is a workaround for a missing setting, not an encoder
   limit. For H.264 the proper fix is `H264Encoder(framerate=fps,
   enable_sps_framerate=True)` with the requested bitrate; `spike/m0_spike.py
   limits` has rows (`s_parm`) that measure it, and the helper keeps the
-  compensation until they confirm it. For MJPEG the compensation stays (no
-  Picamera2 option).
+  compensation until they confirm it. MJPEG can probably be fixed the same
+  way through the inherited attributes (above); the `s_parm` rows in
+  `spike/m0_spike.py mjpeg` measure it.
 - Side effect of the default: the driver always writes timing information
   into the H.264 SPS ([#L2792-L2798](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c#L2792-L2798)), so without `S_PARM`
   the stream claims 30 fps. Browsers ignore it; tools reading

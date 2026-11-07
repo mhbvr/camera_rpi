@@ -42,11 +42,12 @@ Conventions in the results:
 | 0.7 | How fast do controls apply? | manual exposure after 10 frames | live controls; fewer buffers = faster |
 | 0.8 | Unix socket cost for a frame | 0.37 ms for 200 KB | sockets, no shared memory |
 | 0.9 | Is the bitrate accurate? | no: delivered = requested × fps / 30 (the driver defaults to 30 fps); compensation fixes it | helper hands the encoder `bitrate × 30 / fps`; `s_parm` rows to test the proper fix |
-| 0.10 | Can MJPEG run next to H.264? | yes, no H.264 drops, +5 % CPU; compensated bitrate within ±10 % | MJPEG fallback |
+| 0.10 | Can MJPEG run next to H.264? | yes, no H.264 drops, +5 % CPU; compensated bitrate within ±10 % | MJPEG fallback; `s_parm` rows to test setting the MJPEG frame rate instead |
 
 Open follow-ups: visual aspect check of the 0.6 images; glass-to-glass
-latency through camweb; run `limits` again for the new `s_parm` rows (does
-telling the driver the real frame rate make the compensation unnecessary?).
+latency through camweb; run `limits` and `mjpeg` again for the new `s_parm`
+rows (does telling the driver the real frame rate make the compensation
+unnecessary, for H.264 and for MJPEG?).
 
 ---
 
