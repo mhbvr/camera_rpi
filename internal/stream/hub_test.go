@@ -17,15 +17,8 @@ func video(key bool, seq uint64) *Message {
 }
 
 func drain(s *Sub) []*Message {
-	var out []*Message
-	for {
-		select {
-		case m := <-s.C:
-			out = append(out, m)
-		default:
-			return out
-		}
-	}
+	msgs, _ := s.Take()
+	return msgs
 }
 
 func TestWireFormat(t *testing.T) {
@@ -96,11 +89,42 @@ func TestCloseAndUnsubscribe(t *testing.T) {
 	h.Unsubscribe(a)
 	h.Unsubscribe(a) // idempotent
 	h.Close()
-	if _, ok := <-b.C; ok {
+	<-b.Ready()
+	if _, ok := b.Take(); ok {
 		t.Fatal("b should be closed")
 	}
 	c := h.Subscribe()
-	if _, ok := <-c.C; ok {
-		t.Fatal("subscribe after close should give closed channel")
+	<-c.Ready()
+	if _, ok := c.Take(); ok {
+		t.Fatal("subscribe after close should be closed")
+	}
+}
+
+func TestEventsSurviveFullVideoQueue(t *testing.T) {
+	h := NewHub(2)
+	s := h.Subscribe()
+	h.Publish(video(true, 0))
+	for i := 1; i <= 5; i++ {
+		h.Publish(video(false, uint64(i)))
+	}
+	h.Publish(NewEvent(map[string]any{"event": "state", "state": "reconfiguring"}))
+	got := drain(s)
+	if len(got) != 3 || got[2].Type != TypeEvent {
+		t.Fatalf("want 2 frames + the state event, got %d messages", len(got))
+	}
+}
+
+func TestStuckViewerIsClosed(t *testing.T) {
+	h := NewHub(2)
+	s := h.Subscribe()
+	for i := 0; i <= maxQueuedEvents; i++ {
+		h.Publish(NewEvent(map[string]any{"event": "stats"}))
+	}
+	msgs, ok := s.Take()
+	if len(msgs) != maxQueuedEvents {
+		t.Fatalf("queued %d events", len(msgs))
+	}
+	if _, ok = s.Take(); ok {
+		t.Fatal("a viewer that never reads should be closed")
 	}
 }

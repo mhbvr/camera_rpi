@@ -5,28 +5,43 @@ import (
 	"sync"
 )
 
-// Hub distributes messages to subscribers. Publish never blocks: a viewer
-// whose queue is full loses frames until the next keyframe (drop-to-key).
+// maxQueuedEvents bounds the events queued for one viewer. A viewer that
+// reaches it is not reading at all; it is disconnected (it reconnects and
+// gets the current state from the sticky events).
+const maxQueuedEvents = 256
+
+// Hub distributes video and events to subscribers. Publish never blocks.
+//
+// Video: a viewer whose queue holds queueLen frames loses frames until the
+// next keyframe (drop-to-keyframe), then gets a "drop" event. Events are never
+// dropped: they are small and rare, and a lost "state" event would leave a
+// viewer showing the wrong state.
 type Hub struct {
 	mu       sync.Mutex
 	subs     map[*Sub]struct{}
-	queueLen int
+	queueLen int                 // video frames queued per viewer
 	sticky   map[string]*Message // last event per key, replayed to new viewers
 	order    []string
 	closed   bool
 }
 
-// Sub is one viewer.
+// Sub is one viewer. Wait for Ready, then Take the queued messages.
 type Sub struct {
-	C        chan *Message
-	noVideo  bool // events only (MJPEG fallback pages)
+	noVideo bool // events only (MJPEG fallback pages, /api/events)
+	ready   chan struct{}
+
+	mu       sync.Mutex
+	queue    []*Message
+	videos   int  // video frames in queue
+	events   int  // events in queue
+	closed   bool // no more messages after the queued ones
 	waitKey  bool // skip video until the next keyframe
 	overflow bool // waitKey was caused by a full queue
 	dropped  int  // frames dropped since the last report
 	total    int
 }
 
-// NewHub returns a hub with per-viewer queues of queueLen messages.
+// NewHub returns a hub that queues up to queueLen video frames per viewer.
 func NewHub(queueLen int) *Hub {
 	if queueLen < 2 {
 		queueLen = 2
@@ -44,13 +59,13 @@ func (h *Hub) SubscribeEvents() *Sub { return h.subscribe(true) }
 func (h *Hub) subscribe(noVideo bool) *Sub {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	s := &Sub{C: make(chan *Message, h.queueLen+len(h.order)+1), waitKey: true, noVideo: noVideo}
+	s := &Sub{noVideo: noVideo, waitKey: true, ready: make(chan struct{}, 1)}
 	if h.closed {
-		close(s.C)
+		s.close()
 		return s
 	}
 	for _, k := range h.order {
-		s.C <- h.sticky[k]
+		s.add(h.sticky[k], false)
 	}
 	h.subs[s] = struct{}{}
 	return s
@@ -62,7 +77,7 @@ func (h *Hub) Unsubscribe(s *Sub) {
 	defer h.mu.Unlock()
 	if _, ok := h.subs[s]; ok {
 		delete(h.subs, s)
-		close(s.C)
+		s.close()
 	}
 }
 
@@ -78,7 +93,7 @@ func (h *Hub) Publish(m *Message) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.subs {
-		h.deliver(s, m)
+		s.deliver(m, h.queueLen)
 	}
 }
 
@@ -115,56 +130,98 @@ func (h *Hub) ResetSession() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.subs {
+		s.mu.Lock()
 		s.waitKey = true
+		s.mu.Unlock()
 	}
 }
 
-// Close disconnects all viewers; later subscribers get a closed channel.
+// Close disconnects all viewers; later subscribers are closed at once.
 func (h *Hub) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.closed = true
 	for s := range h.subs {
 		delete(h.subs, s)
-		close(s.C)
+		s.close()
 	}
 }
 
-func (h *Hub) deliver(s *Sub, m *Message) {
-	if m.Type == TypeVideo && s.noVideo {
+// Ready is signalled when messages are queued or the subscription closed.
+func (s *Sub) Ready() <-chan struct{} { return s.ready }
+
+// Take returns the queued messages, oldest first. ok is false once the
+// subscription is closed and everything queued has been taken.
+func (s *Sub) Take() (msgs []*Message, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msgs, s.queue, s.videos, s.events = s.queue, nil, 0, 0
+	return msgs, len(msgs) > 0 || !s.closed
+}
+
+func (s *Sub) deliver(m *Message, queueLen int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
 		return
 	}
+	if m.Type != TypeVideo {
+		s.add(m, true)
+		return
+	}
+	if s.noVideo {
+		return
+	}
+	if s.waitKey {
+		if !m.Key() {
+			if s.overflow {
+				s.dropped++
+			}
+			return
+		}
+		s.waitKey = false
+		if s.overflow {
+			s.overflow = false
+			s.total += s.dropped
+			s.add(NewEvent(map[string]any{"event": "drop", "dropped": s.dropped, "total": s.total}), true)
+			s.dropped = 0
+		}
+	}
+	if s.videos >= queueLen {
+		s.waitKey, s.overflow = true, true
+		s.dropped++
+		return
+	}
+	s.add(m, true)
+}
+
+// add queues m and signals Ready. Called with s.mu held (or before s is
+// shared). With limit, a viewer with too many queued events is closed.
+func (s *Sub) add(m *Message, limit bool) {
 	if m.Type == TypeVideo {
-		if s.waitKey {
-			if !m.Key() {
-				if s.overflow {
-					s.dropped++
-				}
-				return
-			}
-			s.waitKey = false
-			if s.overflow && s.dropped > 0 {
-				s.overflow = false
-				s.total += s.dropped
-				ev := NewEvent(map[string]any{"event": "drop", "dropped": s.dropped, "total": s.total})
-				s.dropped = 0
-				select {
-				case s.C <- ev:
-				default:
-				}
-			}
+		s.videos++
+	} else {
+		if limit && s.events >= maxQueuedEvents {
+			s.closed = true
+			s.signal()
+			return
 		}
-		select {
-		case s.C <- m:
-		default:
-			s.waitKey = true
-			s.overflow = true
-			s.dropped++
-		}
-		return
+		s.events++
 	}
+	s.queue = append(s.queue, m)
+	s.signal()
+}
+
+func (s *Sub) close() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	s.signal()
+}
+
+func (s *Sub) signal() {
 	select {
-	case s.C <- m:
-	default: // events are best effort
+	case s.ready <- struct{}{}:
+	default:
 	}
 }

@@ -144,8 +144,9 @@ func TestManagerFlow(t *testing.T) {
 	// new viewers get the sticky "camera" event (exposure profile info for the UI)
 	sub := hub.Subscribe()
 	gotCamera := false
-	for len(sub.C) > 0 {
-		if msg := <-sub.C; strings.Contains(string(msg.Wire[stream.HeaderSize:]), `"event":"camera"`) {
+	msgs, _ := sub.Take()
+	for _, msg := range msgs {
+		if strings.Contains(string(msg.Payload()), `"event":"camera"`) {
 			gotCamera = true
 		}
 	}
