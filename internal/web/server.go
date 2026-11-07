@@ -39,11 +39,11 @@ type Server struct {
 }
 
 // New builds the server.
-func New(mgr *camera.Manager, hub *stream.Hub, frames *stream.FrameHub, logger *log.Logger) *Server {
+func New(mgr *camera.Manager, hub *stream.Hub, logger *log.Logger) *Server {
 	s := &Server{
 		mgr:    mgr,
 		hub:    hub,
-		frames: frames,
+		frames: mgr.Frames(),
 		log:    logger,
 		tmpl:   template.Must(template.New("index.html").Funcs(schemaFuncs).ParseFS(templatesFS, "templates/index.html")),
 		mux:    http.NewServeMux(),

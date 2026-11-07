@@ -179,7 +179,7 @@ Packages (`internal/`):
 | `helper` | socket listener, session (RPC calls matched by id, video reader goroutine), supervisor (spawn, restart with backoff) |
 | `camera` | `Config` model, settings schema (ranges, validation), `Diff`, libcamera control mapping, `Manager` (drives the session), persistence |
 | `stream` | `Hub` (H.264 + events fan-out, drop-to-keyframe), `FrameHub` (MJPEG, latest frame wins), browser wire format |
-| `h264` | NAL scanning, SPS → codec string |
+| `h264` | NAL scanning and access-unit splitting for the fake helper (the server does not parse H.264) |
 | `web` | HTTP server, REST handlers, template, static JS/CSS |
 
 ### 4.1 Configuration
@@ -198,12 +198,15 @@ Packages (`internal/`):
   publishes it, and the page template reads its form ranges from it.
 
 ### 4.2 Fan-out and backpressure (`stream.Hub`)
-- One encoded stream, N clients, each with a bounded queue (30 messages ≈ 1 s)
-  filled by a non-blocking publish.
+- One encoded stream, N clients, each with its own queue filled by a
+  non-blocking publish. Up to 30 video frames (≈ 1 s) are queued per client;
+  events are always queued (a client that stops reading entirely is
+  disconnected after 256 queued events and gets the current state again when
+  it reconnects).
 - A new client, or a new encoder session (`stream_start`), waits for the next
   keyframe.
-- **Drop-to-keyframe**: when a client's queue is full, it loses everything up
-  to the next keyframe and gets a `drop` event. Latency stays bounded on slow
+- **Drop-to-keyframe**: when a client's video queue is full, it loses video up
+  to the next keyframe and gets a `drop` event. Events are never dropped. Latency stays bounded on slow
   links. This is the only latency control; the browser does not skip frames.
 - The kernel send buffer is kept small (`SetWriteBuffer(256 KiB)` via
   `http.Server.ConnContext`) so a backlog lands in the hub queue, where it can
@@ -211,13 +214,16 @@ Packages (`internal/`):
 - Sticky events: the latest `state`, `camera`, `stream`, `metadata` and
   `stats` are replayed to each new client and served by `GET /api/status`.
 - `/stream`, `/stream.h264` and `/api/events` are all hub clients (events-only
-  clients skip video).
+  clients skip video) and share one send loop (`serveHub` in
+  `internal/web/streams.go`); messages queued together go out in one flush.
 
 ### 4.3 MJPEG (`stream.FrameHub`)
 "Latest frame wins": each client has a one-frame slot, so a slow client skips
-frames and never falls behind. The client count drives the helper's MJPEG
-encoder (`set_mjpeg`): on with the first client, off after the last, re-enabled
-when a new helper session starts.
+frames and never falls behind. `camera.Manager` owns the hub; its client
+count drives the helper's MJPEG encoder (`set_mjpeg`): on with the first
+client, off after the last, re-enabled when a new helper session starts.
+Changes are handled in the session loop, so quick connects and disconnects
+collapse into one call.
 
 ## 5. Streaming to the browser
 
@@ -325,7 +331,7 @@ internal/proto/    helper protocol: video framing, JSON-RPC 2.0 types
 internal/helper/   sockets, session, supervisor
 internal/camera/   config model, limits, schema, libcamera mapping, Manager
 internal/stream/   Hub, FrameHub, browser wire format
-internal/h264/     NAL/SPS helpers
+internal/h264/     H.264 helpers for the fake helper
 internal/web/      HTTP server, REST API, template, static JS/CSS
 spike/             hardware spike script (docs/SPIKE.md)
 deploy/            systemd unit

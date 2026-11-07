@@ -28,16 +28,6 @@ func TestNALUnits(t *testing.T) {
 	}
 }
 
-func TestCodecString(t *testing.T) {
-	s, err := CodecString(sps)
-	if err != nil || s != "avc1.640028" {
-		t.Fatalf("got %q %v", s, err)
-	}
-	if _, err := CodecString([]byte{0x68, 1, 2, 3}); err == nil {
-		t.Fatal("expected error for PPS")
-	}
-}
-
 func TestSplitAccessUnitsSynthetic(t *testing.T) {
 	sc := []byte{0, 0, 0, 1}
 	var b []byte

@@ -26,14 +26,17 @@ type Options struct {
 	HFlip       bool
 	VFlip       bool
 	Log         *log.Logger
-	MJPEG       *stream.FrameHub // MJPEG fallback viewers (may be nil)
 }
 
 // Manager owns the configuration and drives the helper session. All helper
 // operations are serialised.
+//
+// Locks: opMu is held for a whole helper operation (it may wait for the
+// helper); mu guards the fields below it and is only held briefly.
 type Manager struct {
-	opt Options
-	hub *stream.Hub
+	opt    Options
+	hub    *stream.Hub      // H.264 and events
+	frames *stream.FrameHub // MJPEG fallback viewers
 
 	opMu sync.Mutex // serialises helper operations
 
@@ -41,9 +44,9 @@ type Manager struct {
 	cfg   Config
 	sess  *helper.Session
 	hello *proto.Hello
-	state string
 
-	mjpegWanted bool // at least one MJPEG viewer
+	mjpegWanted bool          // at least one MJPEG viewer
+	mjpegSync   chan struct{} // signalled when mjpegWanted changes (capacity 1)
 }
 
 // NewManager returns a manager starting from cfg.
@@ -51,10 +54,15 @@ func NewManager(cfg Config, hub *stream.Hub, opt Options) *Manager {
 	if opt.Log == nil {
 		opt.Log = log.Default()
 	}
-	m := &Manager{opt: opt, hub: hub, cfg: cfg}
+	m := &Manager{opt: opt, hub: hub, cfg: cfg, frames: stream.NewFrameHub(), mjpegSync: make(chan struct{}, 1)}
+	m.frames.OnCount = m.mjpegViewers
 	m.publishState("waiting", "waiting for camera helper")
 	return m
 }
+
+// Frames returns the hub of MJPEG fallback viewers. Its viewer count
+// switches the helper's MJPEG encoder on and off.
+func (m *Manager) Frames() *stream.FrameHub { return m.frames }
 
 // Config returns the current configuration.
 func (m *Manager) Config() Config {
@@ -63,22 +71,12 @@ func (m *Manager) Config() Config {
 	return m.cfg
 }
 
-// State returns the last known pipeline state.
-func (m *Manager) State() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.state
-}
-
 func (m *Manager) publishState(state, detail string) {
-	m.mu.Lock()
-	m.state = state
-	m.mu.Unlock()
-	ev := map[string]any{"event": "state", "state": state}
+	ev := map[string]any{"state": state}
 	if detail != "" {
 		ev["detail"] = detail
 	}
-	m.hub.PublishSticky("state", stream.NewEvent(ev))
+	m.hub.PublishSticky(stream.NewEvent(stream.EventState, ev))
 }
 
 // OnVideo handles video messages from the helper (passed to
@@ -92,30 +90,30 @@ func (m *Manager) OnVideo(msg *proto.VideoMsg) {
 		if err := json.Unmarshal(msg.Payload, &ev); err != nil {
 			m.opt.Log.Printf("camera: bad stream_start: %v", err)
 		}
-		ev["event"] = "stream"
 		m.hub.ResetSession()
-		m.hub.PublishSticky("stream", stream.NewEvent(ev))
+		m.hub.PublishSticky(stream.NewEvent(stream.EventStream, ev))
 		m.opt.Log.Printf("camera: stream_start %s", msg.Payload)
 	case proto.VideoStreamEnd:
 		m.opt.Log.Printf("camera: stream_end %s", msg.Payload)
 	case proto.VideoJPEG:
-		if m.opt.MJPEG != nil {
-			m.opt.MJPEG.Publish(msg.Payload)
-		}
+		m.frames.Publish(msg.Payload)
 	}
 }
 
-// MJPEGViewers is the FrameHub.OnCount hook: it starts the helper's MJPEG
-// encoder when the first fallback viewer connects and stops it after the
-// last one leaves.
-func (m *Manager) MJPEGViewers(n int) {
+// mjpegViewers is the FrameHub.OnCount hook. When MJPEG viewers appear or
+// all leave, it signals the session loop (RunSession), which starts or stops
+// the helper's MJPEG encoder. Quick changes coalesce into one signal.
+func (m *Manager) mjpegViewers(n int) {
 	m.mu.Lock()
 	want := n > 0
 	changed := want != m.mjpegWanted
 	m.mjpegWanted = want
 	m.mu.Unlock()
 	if changed {
-		go m.syncMJPEG(context.Background())
+		select {
+		case m.mjpegSync <- struct{}{}:
+		default: // a signal is already pending; syncMJPEG reads the latest state
+		}
 	}
 }
 
@@ -140,7 +138,11 @@ func (m *Manager) syncMJPEGLocked(ctx context.Context) {
 		m.opt.Log.Printf("camera: set_mjpeg %+v: %v", p, err)
 		return
 	}
-	m.opt.Log.Printf("camera: MJPEG fallback encoder %s", map[bool]string{true: "on", false: "off"}[want])
+	if want {
+		m.opt.Log.Printf("camera: MJPEG fallback encoder on")
+	} else {
+		m.opt.Log.Printf("camera: MJPEG fallback encoder off")
+	}
 }
 
 // RunSession drives one helper session until it ends: wait for hello, send
@@ -206,6 +208,8 @@ func (m *Manager) RunSession(ctx context.Context, sess *helper.Session) error {
 				return sess.Err()
 			}
 			m.handleNotification(n)
+		case <-m.mjpegSync:
+			m.syncMJPEG(ctx)
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -215,13 +219,11 @@ func (m *Manager) RunSession(ctx context.Context, sess *helper.Session) error {
 // publishCamera sends a sticky "camera" event with the camera model and the
 // sensor's analogue gain limit (from libcamera's control ranges).
 func (m *Manager) publishCamera(h *proto.Hello) {
-	ev := map[string]any{"event": "camera", "model": h.Camera.Model, "impl": h.Impl, "impl_version": h.ImplVersion}
-	if ci, ok := h.Camera.Controls["AnalogueGain"]; ok {
-		if max, ok := ci.MaxFloat(); ok {
-			ev["sensor_max_gain"] = max
-		}
+	ev := map[string]any{"model": h.Camera.Model, "impl": h.Impl, "impl_version": h.ImplVersion}
+	if max, ok := h.Camera.Controls["AnalogueGain"].MaxFloat(); ok {
+		ev["sensor_max_gain"] = max
 	}
-	m.hub.PublishSticky("camera", stream.NewEvent(ev))
+	m.hub.PublishSticky(stream.NewEvent(stream.EventCamera, ev))
 }
 
 func (m *Manager) wantMJPEG() bool {
@@ -250,12 +252,12 @@ func (m *Manager) handleNotification(n *proto.Notification) {
 		m.publishState(p.State, p.Detail)
 	case proto.NoteMetadata:
 		// Sticky: new viewers and GET /api/status get the latest values.
-		m.hub.PublishSticky("metadata", stream.NewEvent(map[string]any{"event": "metadata", "data": n.Params}))
+		m.hub.PublishSticky(stream.NewEvent(stream.EventMetadata, map[string]any{"data": n.Params}))
 	case proto.NoteStats:
-		m.hub.PublishSticky("stats", stream.NewEvent(map[string]any{"event": "stats", "data": n.Params}))
+		m.hub.PublishSticky(stream.NewEvent(stream.EventStats, map[string]any{"data": n.Params}))
 	case proto.NoteError:
 		m.opt.Log.Printf("camera: helper error: %s", n.Params)
-		m.hub.Publish(stream.NewEvent(map[string]any{"event": "error", "data": n.Params}))
+		m.hub.Publish(stream.NewEvent(stream.EventError, map[string]any{"data": n.Params}))
 	default:
 		m.opt.Log.Printf("camera: unknown notification %q", n.Method)
 	}

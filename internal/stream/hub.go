@@ -20,7 +20,7 @@ type Hub struct {
 	mu       sync.Mutex
 	subs     map[*Sub]struct{}
 	queueLen int                 // video frames queued per viewer
-	sticky   map[string]*Message // last event per key, replayed to new viewers
+	sticky   map[string]*Message // last event per name, replayed to new viewers
 	order    []string
 	closed   bool
 }
@@ -97,14 +97,14 @@ func (h *Hub) Publish(m *Message) {
 	}
 }
 
-// PublishSticky publishes an event and remembers it under key, so new
-// viewers receive the latest one on subscribe.
-func (h *Hub) PublishSticky(key string, m *Message) {
+// PublishSticky publishes an event and remembers it as the latest of its
+// name, so new viewers receive it on subscribe.
+func (h *Hub) PublishSticky(m *Message) {
 	h.mu.Lock()
-	if _, ok := h.sticky[key]; !ok {
-		h.order = append(h.order, key)
+	if _, ok := h.sticky[m.Event]; !ok {
+		h.order = append(h.order, m.Event)
 	}
-	h.sticky[key] = m
+	h.sticky[m.Event] = m
 	h.mu.Unlock()
 	h.Publish(m)
 }
@@ -112,8 +112,8 @@ func (h *Hub) PublishSticky(key string, m *Message) {
 // Payload returns the message payload (the bytes after the header).
 func (m *Message) Payload() []byte { return m.Wire[HeaderSize:] }
 
-// StickyEvents returns the JSON of the latest sticky event per key (for
-// GET /api/status).
+// StickyEvents returns the JSON of the latest sticky event per event name
+// (for GET /api/status).
 func (h *Hub) StickyEvents() map[string]json.RawMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -183,7 +183,7 @@ func (s *Sub) deliver(m *Message, queueLen int) {
 		if s.overflow {
 			s.overflow = false
 			s.total += s.dropped
-			s.add(NewEvent(map[string]any{"event": "drop", "dropped": s.dropped, "total": s.total}), true)
+			s.add(NewEvent(EventDrop, map[string]any{"dropped": s.dropped, "total": s.total}), true)
 			s.dropped = 0
 		}
 	}

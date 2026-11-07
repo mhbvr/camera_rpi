@@ -68,8 +68,8 @@ func TestSlowViewerDropsToKey(t *testing.T) {
 
 func TestStickyAndReset(t *testing.T) {
 	h := NewHub(10)
-	h.PublishSticky("state", NewEvent(map[string]any{"event": "state", "state": "a"}))
-	h.PublishSticky("state", NewEvent(map[string]any{"event": "state", "state": "b"}))
+	h.PublishSticky(NewEvent("state", map[string]any{"state": "a"}))
+	h.PublishSticky(NewEvent("state", map[string]any{"state": "b"}))
 	s := h.Subscribe()
 	got := drain(s)
 	if len(got) != 1 {
@@ -107,7 +107,7 @@ func TestEventsSurviveFullVideoQueue(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		h.Publish(video(false, uint64(i)))
 	}
-	h.Publish(NewEvent(map[string]any{"event": "state", "state": "reconfiguring"}))
+	h.Publish(NewEvent("state", map[string]any{"state": "reconfiguring"}))
 	got := drain(s)
 	if len(got) != 3 || got[2].Type != TypeEvent {
 		t.Fatalf("want 2 frames + the state event, got %d messages", len(got))
@@ -118,7 +118,7 @@ func TestStuckViewerIsClosed(t *testing.T) {
 	h := NewHub(2)
 	s := h.Subscribe()
 	for i := 0; i <= maxQueuedEvents; i++ {
-		h.Publish(NewEvent(map[string]any{"event": "stats"}))
+		h.Publish(NewEvent("stats", nil))
 	}
 	msgs, ok := s.Take()
 	if len(msgs) != maxQueuedEvents {

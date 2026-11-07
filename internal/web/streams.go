@@ -159,10 +159,6 @@ const mjpegBoundary = "camweb-frame"
 // client is connected, the helper runs a hardware MJPEG encoder; each
 // client gets the newest frame (slow clients skip frames).
 func (s *Server) handleMJPEG(w http.ResponseWriter, r *http.Request) {
-	if s.frames == nil {
-		http.NotFound(w, r)
-		return
-	}
 	sub := s.frames.Subscribe()
 	defer s.frames.Unsubscribe(sub)
 	sw := startStream(w, "multipart/x-mixed-replace; boundary="+mjpegBoundary)

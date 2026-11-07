@@ -74,17 +74,13 @@ func main() {
 	defer stop()
 
 	hub := stream.NewHub(30)
-	frames := stream.NewFrameHub() // MJPEG fallback viewers
 	mgr := camera.NewManager(cfg, hub, camera.Options{
-		MJPEG:       frames,
 		ConfigPath:  cfgPath,
 		CapturesDir: filepath.Join(*dataDir, "captures"),
 		HFlip:       *hflip,
 		VFlip:       *vflip,
 		Log:         logger,
 	})
-
-	frames.OnCount = mgr.MJPEGViewers
 
 	lis, err := helper.Listen(*runtimeDir, logger)
 	if err != nil {
@@ -133,7 +129,7 @@ func main() {
 		}
 	}()
 
-	ws := web.New(mgr, hub, frames, logger)
+	ws := web.New(mgr, hub, logger)
 	ws.CORSOrigin = *corsOrigin
 	srv := &http.Server{
 		Addr:              *listen,
@@ -159,7 +155,7 @@ func main() {
 	<-ctx.Done()
 	logger.Printf("shutting down")
 	hub.Close() // ends /stream responses
-	frames.Close()
+	mgr.Frames().Close()
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(sctx)

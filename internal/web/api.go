@@ -12,6 +12,7 @@ import (
 
 	"github.com/mhbvr/camera_rpi/internal/camera"
 	"github.com/mhbvr/camera_rpi/internal/proto"
+	"github.com/mhbvr/camera_rpi/internal/stream"
 )
 
 // JSON API: /api/config, /api/config/reset, /api/schema, /api/status,
@@ -34,7 +35,13 @@ type statusResponse struct {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ev := s.hub.StickyEvents()
-	resp := statusResponse{State: ev["state"], Camera: ev["camera"], Stream: ev["stream"], Metadata: ev["metadata"], Stats: ev["stats"]}
+	resp := statusResponse{
+		State:    ev[stream.EventState],
+		Camera:   ev[stream.EventCamera],
+		Stream:   ev[stream.EventStream],
+		Metadata: ev[stream.EventMetadata],
+		Stats:    ev[stream.EventStats],
+	}
 	resp.Clients.Stream = s.hub.Viewers()
 	if s.frames != nil {
 		resp.Clients.MJPEG = s.frames.Viewers()

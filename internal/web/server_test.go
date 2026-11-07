@@ -26,7 +26,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *stream.Hub, *camera.Manager
 	hub := stream.NewHub(8)
 	logger := log.New(io.Discard, "", 0)
 	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger})
-	ts := httptest.NewServer(New(mgr, hub, nil, logger).Handler())
+	ts := httptest.NewServer(New(mgr, hub, logger).Handler())
 	t.Cleanup(ts.Close)
 	return ts, hub, mgr
 }
@@ -35,7 +35,7 @@ func TestStreamOverTLS(t *testing.T) {
 	hub := stream.NewHub(8)
 	logger := log.New(io.Discard, "", 0)
 	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger})
-	ts := httptest.NewUnstartedServer(New(mgr, hub, nil, logger).Handler())
+	ts := httptest.NewUnstartedServer(New(mgr, hub, logger).Handler())
 	ts.Config.ConnContext = ConnContext
 	ts.EnableHTTP2 = true
 	ts.StartTLS()
@@ -150,10 +150,10 @@ func TestStream(t *testing.T) {
 
 func TestMJPEGEndpoint(t *testing.T) {
 	hub := stream.NewHub(8)
-	frames := stream.NewFrameHub()
 	logger := log.New(io.Discard, "", 0)
-	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger, MJPEG: frames})
-	ts := httptest.NewServer(New(mgr, hub, frames, logger).Handler())
+	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger})
+	frames := mgr.Frames()
+	ts := httptest.NewServer(New(mgr, hub, logger).Handler())
 	defer ts.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -203,7 +203,7 @@ func TestStreamEventsOnly(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Flags: proto.FlagKey, Payload: []byte{0, 0, 0, 1, 0x65}}))
-	hub.Publish(stream.NewEvent(map[string]any{"event": "metadata"}))
+	hub.Publish(stream.NewEvent("metadata", nil))
 	if _, err := io.ReadFull(res.Body, h); err != nil || h[0] != stream.TypeEvent {
 		t.Fatalf("events-only stream delivered type %d (%v)", h[0], err)
 	}
@@ -221,7 +221,7 @@ func TestSchemaAndStatus(t *testing.T) {
 	}
 	res.Body.Close()
 
-	hub.PublishSticky("metadata", stream.NewEvent(map[string]any{"event": "metadata", "data": map[string]any{"Lux": 12.5}}))
+	hub.PublishSticky(stream.NewEvent("metadata", map[string]any{"data": map[string]any{"Lux": 12.5}}))
 	var st map[string]json.RawMessage
 	res, err = http.Get(ts.URL + "/api/status")
 	if err != nil {
@@ -271,7 +271,7 @@ func TestEventsSSE(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Flags: proto.FlagKey, Payload: []byte{0, 0, 0, 1, 0x65}}))
-	hub.Publish(stream.NewEvent(map[string]any{"event": "stats", "data": map[string]any{"fps": 30}}))
+	hub.Publish(stream.NewEvent("stats", map[string]any{"data": map[string]any{"fps": 30}}))
 	if ev := readEvent(); ev["event"] != "stats" {
 		t.Fatalf("want stats (video skipped), got %v", ev)
 	}
@@ -293,7 +293,7 @@ func TestRawH264(t *testing.T) {
 	delta := []byte{0, 0, 0, 1, 0x41, 9}
 	key := []byte{0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x65, 2}
 	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Payload: delta})) // skipped: before the first keyframe
-	hub.Publish(stream.NewEvent(map[string]any{"event": "stats"}))                     // skipped: not video
+	hub.Publish(stream.NewEvent("stats", nil))                                         // skipped: not video
 	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Flags: proto.FlagKey | proto.FlagConfig, Payload: key}))
 	hub.Publish(stream.NewVideo(&proto.VideoMsg{Type: proto.VideoAU, Payload: delta}))
 	want := append(append([]byte{}, key...), delta...)
@@ -307,7 +307,7 @@ func TestCORS(t *testing.T) {
 	hub := stream.NewHub(8)
 	logger := log.New(io.Discard, "", 0)
 	mgr := camera.NewManager(camera.Defaults(), hub, camera.Options{ConfigPath: filepath.Join(t.TempDir(), "c.json"), Log: logger})
-	s := New(mgr, hub, nil, logger)
+	s := New(mgr, hub, logger)
 	s.CORSOrigin = "https://ui.example"
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()

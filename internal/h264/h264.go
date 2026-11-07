@@ -1,9 +1,8 @@
-// Package h264 has the few H.264 Annex-B helpers the server needs: NAL
-// scanning, keyframe/SPS detection, codec strings, and access-unit splitting
-// (used only by the fake camera, which replays a recorded stream).
+// Package h264 has the few H.264 Annex-B helpers the fake helper (cmd/fakecam)
+// needs to replay a recorded stream: NAL scanning, keyframe/SPS detection and
+// access-unit splitting. The server itself does not parse H.264: the helper
+// marks keyframes and SPS in the video header.
 package h264
-
-import "fmt"
 
 // NAL unit types used here.
 const (
@@ -49,16 +48,6 @@ func NALType(nal []byte) int {
 	return int(nal[0] & 0x1f)
 }
 
-// FindSPS returns the first SPS NAL unit in an Annex-B buffer, or nil.
-func FindSPS(b []byte) []byte {
-	for _, n := range NALUnits(b) {
-		if NALType(n) == NALSPS {
-			return n
-		}
-	}
-	return nil
-}
-
 // Info reports whether an access unit contains an IDR slice and an SPS.
 func Info(au []byte) (key, hasSPS bool) {
 	for _, n := range NALUnits(au) {
@@ -70,15 +59,6 @@ func Info(au []byte) (key, hasSPS bool) {
 		}
 	}
 	return
-}
-
-// CodecString returns the WebCodecs/RFC 6381 codec string ("avc1.PPCCLL")
-// for an SPS NAL unit.
-func CodecString(sps []byte) (string, error) {
-	if len(sps) < 4 || NALType(sps) != NALSPS {
-		return "", fmt.Errorf("h264: not an SPS")
-	}
-	return fmt.Sprintf("avc1.%02X%02X%02X", sps[1], sps[2], sps[3]), nil
 }
 
 // SplitAccessUnits splits an Annex-B stream into access units. A new AU

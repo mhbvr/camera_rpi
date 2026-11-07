@@ -246,9 +246,8 @@ func TestManagerMJPEG(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	frames := stream.NewFrameHub()
-	m := NewManager(Defaults(), stream.NewHub(8), Options{ConfigPath: filepath.Join(dir, "c.json"), Log: logger, MJPEG: frames})
-	frames.OnCount = m.MJPEGViewers
+	m := NewManager(Defaults(), stream.NewHub(8), Options{ConfigPath: filepath.Join(dir, "c.json"), Log: logger})
+	frames := m.Frames()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
