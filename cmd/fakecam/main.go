@@ -76,13 +76,9 @@ func main() {
 	f.notify(proto.NoteState, proto.StateParams{State: "idle"})
 	go f.statsLoop()
 
-	lr := proto.NewLineReader(f.ctl)
-	for {
-		line, err := lr.ReadLine()
-		if err != nil {
-			logger.Printf("ctl closed: %v", err)
-			return
-		}
+	sc := proto.NewLineScanner(f.ctl)
+	for sc.Scan() {
+		line := sc.Bytes()
 		m, err := proto.ParseIncoming(line)
 		if err != nil || !m.IsRequest() {
 			logger.Printf("bad request: %s", line)
@@ -101,6 +97,7 @@ func main() {
 			return
 		}
 	}
+	logger.Printf("ctl closed: %v", sc.Err())
 }
 
 func dialRetry(path string) (net.Conn, error) {

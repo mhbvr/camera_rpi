@@ -24,18 +24,14 @@ func fakeHelper(t *testing.T, l *Listener) (ctl, video net.Conn) {
 		t.Fatal(err)
 	}
 	go func() {
-		lr := proto.NewLineReader(ctl)
+		sc := proto.NewLineScanner(ctl)
 		write := func(v any) {
 			b, _ := proto.MarshalLine(v)
 			ctl.Write(b)
 		}
 		write(proto.Notification{JSONRPC: "2.0", Method: "hello", Params: json.RawMessage(`{"proto":1}`)})
-		for {
-			line, err := lr.ReadLine()
-			if err != nil {
-				return
-			}
-			m, _ := proto.ParseIncoming(line)
+		for sc.Scan() {
+			m, _ := proto.ParseIncoming(sc.Bytes())
 			switch m.Method {
 			case "ping_slow":
 				go func(id int64) {

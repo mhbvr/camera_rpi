@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -79,25 +80,23 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-func TestLineReader(t *testing.T) {
-	lr := NewLineReader(strings.NewReader("a\nbb\n"))
-	for _, want := range []string{"a", "bb"} {
-		got, err := lr.ReadLine()
-		if err != nil || string(got) != want {
-			t.Fatalf("got %q %v want %q", got, err, want)
-		}
+func TestLineScanner(t *testing.T) {
+	sc := NewLineScanner(strings.NewReader("a\nbb\n"))
+	var got []string
+	for sc.Scan() {
+		got = append(got, sc.Text())
 	}
-	if _, err := lr.ReadLine(); err != io.EOF {
-		t.Fatalf("want EOF, got %v", err)
+	if sc.Err() != nil || len(got) != 2 || got[0] != "a" || got[1] != "bb" {
+		t.Fatalf("lines %q, err %v", got, sc.Err())
 	}
-	long := strings.Repeat("x", MaxLine+10) + "\n"
-	if _, err := NewLineReader(strings.NewReader(long)).ReadLine(); err != ErrLineTooLong {
-		t.Fatalf("want ErrLineTooLong, got %v", err)
+	long := strings.Repeat("x", MaxLine+1) + "\n"
+	sc = NewLineScanner(strings.NewReader(long))
+	if sc.Scan() || !errors.Is(sc.Err(), bufio.ErrTooLong) {
+		t.Fatalf("want ErrTooLong, got %v", sc.Err())
 	}
-	// A line bigger than the bufio buffer but under the limit works.
-	mid := strings.Repeat("y", 200<<10)
-	got, err := NewLineReader(strings.NewReader(mid + "\n")).ReadLine()
-	if err != nil || len(got) != len(mid) {
-		t.Fatalf("mid line: %d %v", len(got), err)
+	mid := strings.Repeat("y", 100<<10) // longer than the initial buffer
+	sc = NewLineScanner(strings.NewReader(mid + "\n"))
+	if !sc.Scan() || sc.Text() != mid {
+		t.Fatalf("100 KiB line: %v", sc.Err())
 	}
 }

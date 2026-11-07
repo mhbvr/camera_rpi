@@ -68,13 +68,9 @@ func startFake(t *testing.T, l *helper.Listener) *fakeCam {
 	helloJSON, _ := json.Marshal(hello)
 	write(proto.Notification{JSONRPC: "2.0", Method: "hello", Params: helloJSON})
 	go func() {
-		lr := proto.NewLineReader(ctl)
-		for {
-			line, err := lr.ReadLine()
-			if err != nil {
-				return
-			}
-			m, _ := proto.ParseIncoming(line)
+		sc := proto.NewLineScanner(ctl)
+		for sc.Scan() {
+			m, _ := proto.ParseIncoming(sc.Bytes())
 			f.record(m)
 			res := json.RawMessage(`{}`)
 			switch m.Method {
@@ -277,7 +273,10 @@ func TestManagerMJPEG(t *testing.T) {
 	}
 
 	sub := frames.Subscribe() // first viewer → encoder on
-	waitFor(t, func() bool { p, ok := lastMJPEG(); return ok && p.Enabled && p.Bitrate == 8_000_000 && p.Skip == 2 && p.FrameRate == 30 })
+	waitFor(t, func() bool {
+		p, ok := lastMJPEG()
+		return ok && p.Enabled && p.Bitrate == 8_000_000 && p.Skip == 2 && p.FrameRate == 30
+	})
 
 	// JPEG frames from the helper reach the viewer
 	m.OnVideo(&proto.VideoMsg{Type: proto.VideoJPEG, Payload: []byte{0xff, 0xd8}})

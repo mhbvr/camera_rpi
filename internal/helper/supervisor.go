@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// stopTimeout is how long the helper gets to exit after SIGTERM before it is
+// killed.
+const stopTimeout = 3 * time.Second
+
 // Supervisor runs the helper process and restarts it with backoff
 // (1 s, 2 s, 4 s … 30 s; reset after 60 s of healthy running).
 type Supervisor struct {
@@ -18,8 +22,8 @@ type Supervisor struct {
 	Env  []string // extra environment ("K=V"), appended to os.Environ
 	Log  *log.Logger
 
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	mu   sync.Mutex
+	stop context.CancelFunc // stops the current run; nil between runs
 }
 
 // Run blocks until ctx is cancelled, keeping the helper running.
@@ -46,9 +50,15 @@ func (s *Supervisor) Run(ctx context.Context) {
 	}
 }
 
+// runOnce starts the helper and waits for it to exit. When ctx ends or Kill
+// is called, the helper gets SIGTERM and, after stopTimeout, SIGKILL.
 func (s *Supervisor) runOnce(ctx context.Context) error {
-	cmd := exec.Command(s.Args[0], s.Args[1:]...)
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	cmd := exec.CommandContext(runCtx, s.Args[0], s.Args[1:]...)
 	cmd.Env = append(cmd.Environ(), s.Env...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = stopTimeout
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -58,28 +68,17 @@ func (s *Supervisor) runOnce(ctx context.Context) error {
 		return err
 	}
 	s.Log.Printf("helper: started pid %d: %v", cmd.Process.Pid, s.Args)
-	s.mu.Lock()
-	s.cmd = cmd
-	s.mu.Unlock()
+	s.setStop(stop)
+	defer s.setStop(nil)
 
-	logDone := make(chan struct{})
-	go func() { s.pipeLog(out); close(logDone) }()
+	s.pipeLog(out) // until the helper exits and the pipe closes
+	return cmd.Wait()
+}
 
-	waitDone := make(chan error, 1)
-	go func() {
-		<-logDone
-		waitDone <- cmd.Wait()
-	}()
-	select {
-	case err = <-waitDone:
-	case <-ctx.Done():
-		s.terminate(cmd, waitDone)
-		err = ctx.Err()
-	}
+func (s *Supervisor) setStop(stop context.CancelFunc) {
 	s.mu.Lock()
-	s.cmd = nil
+	s.stop = stop
 	s.mu.Unlock()
-	return err
 }
 
 func (s *Supervisor) pipeLog(r io.Reader) {
@@ -90,26 +89,12 @@ func (s *Supervisor) pipeLog(r io.Reader) {
 	}
 }
 
-// Kill terminates the current helper process (it will be restarted by Run).
+// Kill stops the current helper process; Run starts a new one.
 func (s *Supervisor) Kill() {
 	s.mu.Lock()
-	cmd := s.cmd
+	stop := s.stop
 	s.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		go func() {
-			time.Sleep(3 * time.Second)
-			_ = cmd.Process.Kill() // no-op error if already gone
-		}()
-	}
-}
-
-func (s *Supervisor) terminate(cmd *exec.Cmd, waitDone <-chan error) {
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-waitDone:
-	case <-time.After(3 * time.Second):
-		_ = cmd.Process.Kill()
-		<-waitDone
+	if stop != nil {
+		stop()
 	}
 }
