@@ -333,18 +333,26 @@ def exp_limits(picam2, seconds=6):
     from picamera2.encoders import H264Encoder
     print("## 0.9 Encoder limits (1440x1080)\n")
     import camhelper
-    print("Bitrate accuracy without and with camhelper's compensation (bitrate * 30 / fps).\n")
-    print("| fps | compensated | requested | delivered fps | Mbit/s | CPU % |\n|---|---|---|---|---|---|")
-    for fps, br, comp in ((30, 6_000_000, False), (40, 6_000_000, False), (40, 6_000_000, True),
-                          (40, 2_000_000, True), (40, 12_000_000, True), (15, 6_000_000, False),
-                          (15, 6_000_000, True)):
+    # Methods: "none" = bitrate as requested; "compensated" = camhelper's
+    # bitrate * 30 / fps; "s_parm" = tell the driver the real frame rate
+    # (framerate= plus enable_sps_framerate=True makes Picamera2 call
+    # VIDIOC_S_PARM; the bcm2835-codec driver otherwise assumes 30 fps).
+    print("Bitrate accuracy: as requested, with camhelper's compensation (bitrate * 30 / fps), "
+          "or with the real frame rate given to the driver (s_parm).\n")
+    print("| fps | method | requested | delivered fps | Mbit/s | CPU % |\n|---|---|---|---|---|---|")
+    for fps, br, method in ((30, 6_000_000, "none"), (40, 6_000_000, "none"), (40, 6_000_000, "compensated"),
+                            (40, 2_000_000, "compensated"), (40, 12_000_000, "compensated"),
+                            (15, 6_000_000, "none"), (15, 6_000_000, "compensated"),
+                            (40, 6_000_000, "s_parm"), (40, 12_000_000, "s_parm"), (15, 6_000_000, "s_parm")):
         picam2.configure(video_config(picam2, fps=fps))
         rec = Recorder()
-        kw = dict(bitrate=camhelper.encoder_bitrate(br, fps) if comp else br, repeat=True, iperiod=fps)
+        kw = dict(bitrate=camhelper.encoder_bitrate(br, fps) if method == "compensated" else br, repeat=True, iperiod=fps)
+        if method == "s_parm":
+            kw.update(framerate=fps, enable_sps_framerate=True)
         try:
             enc = H264Encoder(**kw)
         except TypeError:
-            print("| %d | not supported | | | | |" % fps)
+            print("| %d | %s: not supported by this Picamera2 | | | | |" % (fps, method))
             continue
         c0 = cpu_seconds()
         picam2.start_encoder(enc, rec.output, name="lores")
@@ -356,7 +364,7 @@ def exp_limits(picam2, seconds=6):
         cpu = (cpu_seconds() - c0) / (seconds + 1)
         picam2.stop_encoder(enc)
         picam2.stop()
-        print("| %d | %s | %d M | %.1f | %.2f | %.0f |" % (fps, "yes" if comp else "no", br // 1_000_000,
+        print("| %d | %s | %d M | %.1f | %.2f | %.0f |" % (fps, method, br // 1_000_000,
                                                       (n1 - n0) / (t1 - t0), (b1 - b0) * 8 / (t1 - t0) / 1e6, cpu * 100))
     print()
 
