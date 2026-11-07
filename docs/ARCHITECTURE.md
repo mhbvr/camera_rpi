@@ -117,7 +117,7 @@ for snapshots and `lores` for video. Three pipelines use them:
 | Flow | Volume |
 |---|---|
 | H.264 video, helper → Go | ≤ 25 Mbit/s ≈ 3 MB/s worst case, 30–40 messages/s, 5–500 KB each |
-| MJPEG video (only while MJPEG clients watch) | up to 25 Mbit/s, 25–75 KB per frame |
+| MJPEG video (only while MJPEG clients watch) | up to 25 Mbit/s, 35–62 KB per frame at 1440×1080 |
 | Control requests and replies | a few per user action, < 1 KB |
 | Events (state, metadata, stats) | ~2–5 per second, < 1 KB |
 | Snapshots | **not sent over IPC**: the helper writes the file, Go reads it |
@@ -126,7 +126,7 @@ for snapshots and `lores` for video. Three pipelines use them:
 
 | | stdin/stdout pipes | **Unix domain sockets** | Shared memory |
 |---|---|---|---|
-| Latency per message | ~10–30 µs | ~10–30 µs (0.37 ms for 200 KB, spike 0.8) | ~1–5 µs plus synchronisation |
+| Latency per message | ~10–30 µs | ~10–30 µs (0.34 ms for 200 KB, spike 0.8) | ~1–5 µs plus synchronisation |
 | Cost at 3 MB/s | negligible | negligible | negligible; zero-copy gains nothing here |
 | Separate control and video channels | awkward | **natural** (two sockets) | needs a side channel |
 | Process lifecycle | tied to the parent | **independent**: either side can restart and reconnect | independent, crash cleanup is tricky |
@@ -291,8 +291,8 @@ Budget for 1440×1080 at 30 fps on a LAN (camera-side stages measured, spike
 | Stage | Time |
 |---|---|
 | exposure, readout, ISP (sensor timestamp → request complete) | 35 ms p50 (33 ms exposure, dark scene; less with shorter exposures) |
-| hardware H.264 encode | ~18 ms p50 (sensor → encoder output 53 ms p50, 73 ms p95) |
-| helper hand-off (Python, socket) | < 1 ms; snapshot JPEG encoding adds up to ~11 ms jitter (p95) |
+| hardware H.264 encode | ~17 ms p50 (sensor → encoder output 52 ms p50, 62 ms p95) |
+| helper hand-off (Python, socket) | < 1 ms; snapshot JPEG encoding adds up to ~9 ms jitter (p95) |
 | Go hub and HTTP write | ~1 ms |
 | network | LAN 1–5 ms; internet RTT/2 plus I-frame serialisation |
 | browser hardware decode | 5–15 ms |
@@ -306,7 +306,7 @@ glass-to-glass is measured by filming an on-screen millisecond clock.
 
 | Risk | Status / mitigation |
 |---|---|
-| Python GIL: a snapshot's JPEG encode delays the encoder output thread | measured (spike 0.5): callback interval p95 35 → 47 ms, no dropped frames. Accepted; a subprocess encoder is the fix if needed |
+| Python GIL: a snapshot's JPEG encode delays the encoder output thread | measured (spike 0.5): callback interval p95 34.5 → 43 ms, no dropped frames. Accepted; a subprocess encoder is the fix if needed |
 | No helper-side queue: if Go stops reading `video.sock`, the encoder blocks | Go reads it in a dedicated goroutine that only hands frames to the non-blocking hub; 1 MiB `SO_SNDBUF` absorbs hiccups |
 | Picamera2 API differences between versions | the helper probes optional arguments (`profile`, `framerate`) and accepts extra `outputframe` args |
 | TCP delay build-up over the internet | drop-to-keyframe, small send buffer; WebRTC is the upgrade path |

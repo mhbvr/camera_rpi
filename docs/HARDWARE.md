@@ -37,7 +37,7 @@ Contents:
 | Board | Raspberry Pi 4 (VC4 platform: BCM2711, Pi 4 ISP, hardware H.264 and MJPEG encoders) |
 | Camera | HQ Camera (IMX477, 12.3 MP, 4056×3040) on CSI, manual-focus C/CS lens |
 | OS | Raspberry Pi OS Bookworm or newer, 64-bit preferred |
-| Camera stack | libcamera + **Picamera2** (`python3-picamera2`, preinstalled on desktop images; on Lite: `sudo apt install -y python3-picamera2 --no-install-recommends`) |
+| Camera stack | libcamera + **Picamera2** ≥ 0.3.19 (`python3-picamera2`, preinstalled on desktop images; on Lite: `sudo apt install -y python3-picamera2 --no-install-recommends`) |
 | Python | system `python3` with Picamera2 and numpy (pulled in by Picamera2); no pip packages |
 
 Facts about the Pi 4 camera system that shape the design (Picamera2 manual,
@@ -117,13 +117,13 @@ picam2.start()
 - **Rate control needs the frame rate.** The Pi's encoders plan bits per frame
   for 30 fps unless they are told the real frame rate (§3.1). The helper tells
   them: `H264Encoder(framerate=fps, enable_sps_framerate=True)`. Then
-  `encoder.bitrate` is the delivered bitrate (spike 0.9, 2026-11-07: 6 → 6.04
-  at 40 fps, 12 → 12.06, 6 → 6.42 at 15 fps). Without it the encoder delivers
+  `encoder.bitrate` is the delivered bitrate (spike 0.9: 6 → 6.04 at 40 fps,
+  12 → 12.06, 6 → 6.42 at 15 fps). Without it the encoder would deliver
   requested × fps / 30.
 - Because the frame rate is set when the encoder starts, **a frame-rate change
   restarts the encoder** (new keyframe, short gap).
-- CPU (helper process): about 11 / 22 / 43 % of one core at 15 / 30 / 40 fps,
-  independent of bitrate (spike 0.9).
+- CPU (helper process): about 11 % of one core at 15 fps, 16–30 % at 30 fps,
+  42 % at 40 fps, independent of bitrate (spike 0.5, 0.9).
 
 **MJPEG** (hardware, on lores, only while an MJPEG fallback viewer is
 connected):
@@ -134,10 +134,10 @@ connected):
   ±10 % of `mjpeg.bitrate` (spike 0.10); very low bitrates hit a quality
   floor.
 - H.264 keeps its full frame rate with 0 dropped frames; about +5 % CPU
-  (spike 0.10). Frames are 25–75 KB at 1440×1080.
+  (spike 0.10). Frames are 35–62 KB at 1440×1080.
 
-**Still JPEG** (software, Picamera2/simplejpeg or Pillow): about 95–125 ms for
-a 2028×1520 frame, in a worker thread (spike 0.5).
+**Still JPEG** (software, Picamera2/simplejpeg or Pillow): about 125 ms for a
+2028×1520 frame, in a worker thread (spike 0.5).
 
 ### 3.1 Why the encoders assume 30 fps
 
@@ -165,8 +165,7 @@ told the camera's frame rate unless the application says so:
    [h264_encoder.py#L27-L50](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/encoders/h264_encoder.py#L27-L50): *"The framerate
    can be reported in the sequence headers if enable_sps_framerate is set, but
    there's no guarantee that frames will be delivered to the codec at that
-   rate!"*). That is why the first spike 0.9 run saw no effect from
-   `framerate=`. The commit that added the option
+   rate!"*). So `framerate=` alone has no effect on the bitrate. The commit that added the option
    ([cf929b3](https://github.com/raspberrypi/picamera2/commit/cf929b31448c00515eb56c466c4135ed0f13afca),
    Picamera2 0.3.9) calls the value *"merely a number in the H264 SPS
    headers"*; it is in fact what the rate control uses.
@@ -180,26 +179,26 @@ told the camera's frame rate unless the application says so:
    since Picamera2 0.3.10 (2023), older than `frame_skip_count` (0.3.19), which
    the helper needs anyway.
 
-**Measured (spike 2026-11-07):** giving the encoder the real frame rate
-(`s_parm` rows) delivers the same bitrate as the old bitrate compensation,
-within about 1 %, for H.264 (40 fps: 6.04 vs 6.06 Mbit/s; 15 fps: 6.42 vs
-6.37) and for MJPEG (every 2nd frame: 7.31 vs 7.39; every 3rd: 3.78 vs 3.77).
-The firmware's MJPEG rate control follows the frame rate too.
+**Measured (spike 0.9, 0.10):** with the real frame rate the encoders deliver
+the requested bitrate, for H.264 (40 fps: 6 → 6.04 Mbit/s; 15 fps: 6 → 6.42)
+and for MJPEG (every 2nd frame: 8 → 7.31; every 3rd: 4 → 3.78). So the
+firmware's rate control, MJPEG included, uses the frame rate it is given.
 
 **What the helper does** (`make_h264_encoder`, `make_mjpeg_encoder` in
 `camhelper.py`):
 - H.264: `framerate=fps, enable_sps_framerate=True`, bitrate as requested.
 - MJPEG: `enc.framerate = fps / skip; enc._enable_framerate = True`, bitrate
-  as requested.
-- Fallback, if this Picamera2 lacks the argument or the attributes: the old
-  compensation, `bitrate × 30 / rate` (capped at 25 Mbit/s). `_enable_framerate`
-  is private, so a future Picamera2 could rename it; the fallback covers that.
-- `stream_start` reports which was used (`rate_control`: `framerate` or
-  `compensated`), and the MJPEG start is logged with it.
+  as requested. `_enable_framerate` is a private Picamera2 attribute; if a
+  future version renames it, the helper reports an error instead of
+  starting MJPEG with a wrong bitrate.
+- Needs Picamera2 ≥ 0.3.19 (also for `profile` and `frame_skip_count`);
+  older versions get a clear error.
+- On a Pi 5 Picamera2 substitutes libav software encoders, which take
+  `framerate` as an argument; the helper passes it there (HW_SPECIFIC.md).
 - With the frame rate set, the H.264 SPS timing information (which the driver
   always writes, [#L2792](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c#L2792)) should state the real frame rate
-  instead of 30 (not checked yet).
-- A C++ helper using V4L2 directly would simply call `VIDIOC_S_PARM`.
+  (not checked yet).
+- A C++ helper using V4L2 directly would call `VIDIOC_S_PARM`.
 
 ## 4. Settings reference
 
@@ -239,7 +238,7 @@ disruptive thing, `internal/camera/config.go` `Diff`):
 
 | Change | Mechanism | Stream impact |
 |---|---|---|
-| exposure, white balance, image controls | `set_controls` | none; takes effect after ~10 frames with 6 buffers (spike 0.7) |
+| exposure, white balance, image controls | `set_controls` | none; takes effect after ~9 frames with 6 buffers (spike 0.7) |
 | bitrate, GOP, frame rate (also a manual shutter longer than the frame time, which stretches the frame time) | `set_controls` if needed, then encoder restart | new keyframe, short gap |
 | stream size, buffer count | stop → configure → start inside the helper | short gap (a few hundred ms) |
 | MJPEG settings | MJPEG encoder restart, only while MJPEG viewers are connected | none on H.264 |
@@ -256,10 +255,10 @@ configured mode (spike 0.1).
 **Capture** (`POST /api/capture`) takes a JPEG **from the running main stream
 without interrupting the video**:
 - The helper takes the next completed request, copies the main buffer
-  (~4.6 MB YUV420, 13 ms mean) and releases it at once. The H.264 stream keeps
+  (~4.6 MB YUV420, 15 ms mean) and releases it at once. The H.264 stream keeps
   running: 0 dropped frames while capturing (spike 0.4).
-- JPEG encoding runs in a worker thread (~94 ms). It holds the Python GIL and
-  adds jitter to the encoder output: callback interval p95 35 → 47 ms during
+- JPEG encoding runs in a worker thread (~125 ms). It holds the Python GIL and
+  adds jitter to the encoder output: callback interval p95 34.5 → 43 ms during
   snapshots (spike 0.5).
 - Resolution 2028×1520. Exposure and white balance are those of the live
   stream (same frame). There is no separate still exposure.
@@ -638,10 +637,10 @@ camweb does not offer it.
   7 MB, so the default 6 buffers are comfortable. On "Failed to allocate
   buffers", lower `pipeline.buffer_count` or raise CMA in
   `/boot/firmware/config.txt` (`dtoverlay=vc4-kms-v3d,cma-512`).
-- More buffers add pipeline depth: a manual exposure change took 10 frames
+- More buffers add pipeline depth: a manual exposure change took 9 frames
   with 6 buffers (spike 0.7).
 - Camera-side latency (spike 0.3, dark scene, 33 ms exposure): sensor
-  timestamp → request complete 35 ms p50; → H.264 encoder output 53 ms p50
-  (73 ms p95); → socket < 1 ms. The `stats` event reports the helper's
+  timestamp → request complete 35 ms p50; → H.264 encoder output 52 ms p50
+  (62 ms p95); → socket < 1 ms. The `stats` event reports the helper's
   measured sensor → socket latency (`latency_ms`). End-to-end budget:
   [ARCHITECTURE.md §7](ARCHITECTURE.md#7-latency).

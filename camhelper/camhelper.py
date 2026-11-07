@@ -41,14 +41,8 @@ E_BUSY, E_NOT_CONFIGURED, E_CAMERA, E_IO = -32001, -32002, -32003, -32004
 
 MAX_LINE = 1 << 20
 
-# The Pi's V4L2 encoders (bcm2835-codec) budget bits per frame for 30 fps
-# unless they are told the frame rate with VIDIOC_S_PARM (docs/HARDWARE.md
-# §3.1). The helper tells them (make_h264_encoder, make_mjpeg_encoder;
-# spike 0.9/0.10, 2026-11-07: delivered = requested). Only if this Picamera2
-# cannot pass the frame rate does it fall back to scaling the bitrate
-# (encoder_bitrate: delivered = requested * fps / 30 otherwise).
-ENCODER_ASSUMED_FPS = 30.0
-MAX_ENCODER_BITRATE = 25_000_000
+# Frame rate used before the server has sent one.
+DEFAULT_FPS = 30.0
 METADATA_KEYS = ("ExposureTime", "AnalogueGain", "DigitalGain", "ColourGains",
                  "ColourTemperature", "Lux", "FrameDuration", "FocusFoM",
                  "AeState", "SensorTimestamp")
@@ -441,9 +435,8 @@ class Camera:
         from picamera2.encoders import H264Encoder
         self.session += 1
         self.seq = 0
-        fr = self.enc_params.get("framerate") or self.fps or ENCODER_ASSUMED_FPS
-        enc, rate_control, enc_bitrate = make_h264_encoder(
-            H264Encoder, self.enc_params["bitrate"], self.enc_params["iperiod"], fr)
+        fr = self.enc_params.get("framerate") or self.fps or DEFAULT_FPS
+        enc = make_h264_encoder(H264Encoder, self.enc_params["bitrate"], self.enc_params["iperiod"], fr)
         if self.output is None:
             self.output = _make_output(self)
         self.video.send_json(T_STREAM_START, {
@@ -451,7 +444,7 @@ class Camera:
             "width": self.lores_size[0], "height": self.lores_size[1],
             "fps": self.fps, "profile": "high",
             "bitrate": self.enc_params["bitrate"], "iperiod": self.enc_params["iperiod"],
-            "framerate": fr, "encoder_bitrate": enc_bitrate, "rate_control": rate_control,
+            "framerate": fr,
         })
         self.picam2.start_encoder(enc, self.output, name="lores")
         self.encoder = enc
@@ -465,15 +458,13 @@ class Camera:
     def _start_mjpeg(self):
         from picamera2.encoders import MJPEGEncoder
         skip = self.mjpeg_params["skip"]
-        enc, rate_control, enc_bitrate = make_mjpeg_encoder(
-            MJPEGEncoder, self.mjpeg_params["bitrate"], self.fps or ENCODER_ASSUMED_FPS, skip)
+        enc = make_mjpeg_encoder(MJPEGEncoder, self.mjpeg_params["bitrate"], self.fps or DEFAULT_FPS, skip)
         if self.mjpeg_output is None:
             self.mjpeg_output = _make_jpeg_output(self)
         self.mjpeg_seq = 0
         self.picam2.start_encoder(enc, self.mjpeg_output, name="lores")
         self.mjpeg_encoder = enc
-        log.info("MJPEG encoder started (bitrate %d, encoder bitrate %d, every %d. frame, rate control: %s)",
-                 self.mjpeg_params["bitrate"], enc_bitrate, skip, rate_control)
+        log.info("MJPEG encoder started (bitrate %d, every %d. frame)", self.mjpeg_params["bitrate"], skip)
 
     def _stop_mjpeg(self):
         if self.mjpeg_encoder is not None:
@@ -578,66 +569,51 @@ def _make_jpeg_output(cam):
     return JpegOutput()
 
 
-def encoder_bitrate(bitrate, fps):
-    """Fallback: bitrate to give an encoder that assumes 30 fps so that
-    `bitrate` is delivered at `fps`."""
-    return int(min(MAX_ENCODER_BITRATE, round(bitrate * ENCODER_ASSUMED_FPS / fps)))
+# The Pi's V4L2 encoders (bcm2835-codec) plan bits per frame for 30 fps unless
+# they are told the frame rate with VIDIOC_S_PARM (docs/HARDWARE.md §3.1), so
+# both encoders get the real frame rate. Needs Picamera2 >= 0.3.19.
+PICAMERA2_TOO_OLD = "Picamera2 >= 0.3.19 required (encoder frame rate, profile, frame_skip_count)"
 
 
 def make_h264_encoder(cls, bitrate, iperiod, fps):
-    """Create the H.264 encoder. Returns (encoder, rate_control, encoder_bitrate).
+    """Create the H.264 encoder for `fps` frames per second.
 
-    Preferred ("framerate"): pass the real frame rate with
-    enable_sps_framerate=True, so Picamera2 calls VIDIOC_S_PARM and the encoder
-    budgets for `fps`; the bitrate is used as is. On a Pi 5, H264Encoder is
-    Picamera2's libav software encoder, which takes `framerate` but not
-    `enable_sps_framerate`. Fallback ("compensated", for a Picamera2 without
-    `framerate`): scale the bitrate for an encoder that assumes 30 fps. Older
-    versions also lack `profile`.
+    Pi 4 (V4L2 hardware encoder): framerate + enable_sps_framerate=True makes
+    Picamera2 call VIDIOC_S_PARM, so the encoder plans for `fps`. Pi 5: Picamera2's
+    H264Encoder is the libav software encoder, which takes `framerate` but has
+    no enable_sps_framerate.
     """
-    base = dict(repeat=True, iperiod=iperiod)
-    comp = encoder_bitrate(bitrate, fps)
-    attempts = (
-        (dict(base, bitrate=bitrate, framerate=fps, enable_sps_framerate=True, profile="high"), "framerate"),
-        (dict(base, bitrate=bitrate, framerate=fps, enable_sps_framerate=True), "framerate"),
-        (dict(base, bitrate=bitrate, framerate=fps, profile="high"), "framerate"),  # libav (Pi 5)
-        (dict(base, bitrate=comp, profile="high"), "compensated"),
-        (dict(base, bitrate=comp), "compensated"),
-    )
-    for kw, rate_control in attempts:
+    base = dict(bitrate=bitrate, repeat=True, iperiod=iperiod, framerate=fps, profile="high")
+    for kw in (dict(base, enable_sps_framerate=True), base):
         try:
-            return cls(**kw), rate_control, kw["bitrate"]
+            return cls(**kw)
         except TypeError:
             continue
-    raise RpcError(E_CAMERA, "cannot create H264Encoder")
+    raise RpcError(E_CAMERA, PICAMERA2_TOO_OLD)
 
 
 def make_mjpeg_encoder(cls, bitrate, fps, skip):
     """Create the MJPEG encoder for every `skip`-th frame at camera rate `fps`.
-    Returns (encoder, rate_control, encoder_bitrate).
 
-    The hardware MJPEGEncoder (Pi 4) has no framerate argument, but it inherits
-    V4L2Encoder's `framerate` / `_enable_framerate` attributes (Picamera2 >=
-    0.3.10); with both set, Picamera2 calls VIDIOC_S_PARM as for H.264. The
-    libav software encoder used on a Pi 5 takes `framerate` as an argument.
-    Either is "framerate"; otherwise scale the bitrate ("compensated").
+    Pi 4: the hardware MJPEGEncoder has no framerate argument, but it inherits
+    V4L2Encoder's `framerate` / `_enable_framerate` attributes; with both set,
+    Picamera2 calls VIDIOC_S_PARM as for H.264. Pi 5: the libav software encoder
+    takes `framerate` as an argument.
     """
     rate = fps / skip
     enc = cls(bitrate=bitrate)
     if hasattr(enc, "framerate") and hasattr(enc, "_enable_framerate"):
         enc.framerate = rate
         enc._enable_framerate = True
-        rate_control, enc_bitrate = "framerate", bitrate
     else:
         try:
-            enc = cls(bitrate=bitrate, framerate=rate)  # libav (Pi 5)
-            rate_control, enc_bitrate = "framerate", bitrate
+            enc = cls(bitrate=bitrate, framerate=rate)
         except TypeError:
-            enc_bitrate = encoder_bitrate(bitrate, rate)
-            enc = cls(bitrate=enc_bitrate)
-            rate_control = "compensated"
+            raise RpcError(E_CAMERA, PICAMERA2_TOO_OLD)
+    if not hasattr(enc, "frame_skip_count"):
+        raise RpcError(E_CAMERA, PICAMERA2_TOO_OLD)
     enc.frame_skip_count = skip
-    return enc, rate_control, enc_bitrate
+    return enc
 
 
 def _enc_params(p):
