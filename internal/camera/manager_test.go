@@ -291,7 +291,7 @@ func TestManagerMJPEG(t *testing.T) {
 	if _, _, err := m.Apply(ctx, []byte(`{"mjpeg":{"skip":0}}`)); err == nil {
 		t.Fatal("skip 0 accepted")
 	}
-	// a frame-rate change re-sends set_mjpeg (the helper compensates the bitrate for fps)
+	// a frame-rate change re-sends set_mjpeg (the helper sets the MJPEG encoder's frame rate from fps)
 	n := f.count()
 	if _, _, err := m.Apply(ctx, []byte(`{"controls":{"fps":20}}`)); err != nil {
 		t.Fatal(err)

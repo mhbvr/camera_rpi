@@ -36,8 +36,8 @@ camhelper.py (Python, Picamera2)  ──ctl.sock: JSON-RPC 2.0──▶  camweb 
 
 - Raspberry Pi 4, HQ Camera, Raspberry Pi OS Bookworm or newer; the camera
   shows up in `rpicam-hello --list-cameras`
-- `python3-picamera2` (preinstalled on desktop images; on Lite:
-  `sudo apt install -y python3-picamera2 --no-install-recommends`)
+- `python3-picamera2` 0.3.19 or newer (preinstalled on desktop images; on
+  Lite: `sudo apt install -y python3-picamera2 --no-install-recommends`)
 - To build: Go 1.22+ on any machine (the binary cross-compiles and embeds the
   Python helper)
 

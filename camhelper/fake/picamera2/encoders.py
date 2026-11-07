@@ -14,6 +14,8 @@ class H264Encoder:
 class MJPEGEncoder:
     def __init__(self, bitrate=None):
         self.bitrate = bitrate
+        self.framerate = None  # inherited from V4L2Encoder in the real Picamera2
+        self._enable_framerate = False
         self.frame_skip_count = 1
         self.output = None
         self.index = 0

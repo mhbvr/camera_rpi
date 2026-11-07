@@ -17,7 +17,7 @@ and Raspberry Pi's documentation.
 | Helper protocol ([HELPER_API.md](HELPER_API.md)) | nothing | ✅ | ✅ | ✅ |
 | `camhelper.py` (Picamera2 calls) | Picamera2 + libcamera | ✅ expected | ⚠️ runs, but software encoders (below) | ✅ with new sizes |
 | libcamera control mapping | libcamera's standard controls | ✅ | ✅ | ✅ (some controls may be missing) |
-| Hardware H.264 / MJPEG encoders, bitrate compensation | **VC4** | ✅ | ❌ software encoders; compensation wrong | ✅ |
+| Hardware H.264 / MJPEG encoders and their rate control | **VC4** | ✅ | ❌ software encoders | ✅ |
 | Sensor mode, main and stream sizes, fps and gain limits | **IMX477** | ✅ | ✅ | ❌ change constants |
 | Explanations and tables (tuning values, metering zones, focus grid) | **IMX477 tuning on VC4** | mostly ✅ | ❌ different statistics | ❌ different tuning |
 
@@ -60,7 +60,7 @@ Zero 2 W, CM3/CM4) and **PiSP** (Pi 5, CM5). These parts depend on VC4:
 | What | Why it matters | Where |
 |---|---|---|
 | **Hardware H.264 and MJPEG encoders** | Picamera2 uses the V4L2 hardware encoders only on VC4; on Pi 5 `H264Encoder`/`MJPEGEncoder` are software libav encoders ([encoders/__init__.py#L12-L23](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/encoders/__init__.py#L12-L23)). The helper's calls are compatible, but encoding then costs CPU, and running H.264 + MJPEG in parallel is no longer nearly free | `camhelper.py` `_start_encoder`, `set_mjpeg` |
-| **30 fps rate-control default** | the VC4 `bcm2835-codec` driver assumes 30 fps unless told otherwise, so the encoder delivers `bitrate × fps / 30` (spike 0.9, [HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)); the helper compensates with `encoder_bitrate()`. On another encoder this would overshoot: re-measure with `spike/m0_spike.py limits` and drop the compensation if delivered = requested | `camhelper.py` `encoder_bitrate`, `ENCODER_ASSUMED_FPS` |
+| **30 fps rate-control default** | the VC4 `bcm2835-codec` driver assumes 30 fps unless told the frame rate ([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)). The helper tells it (`framerate` + `enable_sps_framerate`, and the inherited attributes for MJPEG; Picamera2 ≥ 0.3.19). Other encoders: check with `spike/m0_spike.py limits mjpeg` that delivered = requested | `camhelper.py` `make_h264_encoder`, `make_mjpeg_encoder` |
 | **H.264 ≤ 1920×1080** | hardware encoder limit, one reason for the stream sizes | `StreamSizes` |
 | **lores must be YUV, ≤ main** | VC4 rule ([picamera2.py#L1026-L1027](https://github.com/raspberrypi/picamera2/blob/ae3f32ff8c80417f51d7e041dfbc1a71f9ee43d6/picamera2/picamera2.py#L1026-L1027)); camweb always uses YUV420, which also works on Pi 5 | helper `configure` |
 | **15 metering zones**, **4 × 3 focus regions**, 16 × 12 AWB zones | VC4 ISP statistics layout; the UI's zone drawing and the focus explanation describe it. Pi 5's ISP has a different statistics layout | `app.js` `METERING_ZONES`, HARDWARE.md §7, §10 |
@@ -72,8 +72,12 @@ Zero 2 W, CM3/CM4) and **PiSP** (Pi 5, CM5). These parts depend on VC4:
 everything should work as on the Pi 4; they have less CPU and memory (lower
 `buffer_count` if buffer allocation fails).
 
-**Pi 5:** expected to run with software encoding, after removing the bitrate
-compensation; the explanations of metering zones, focus regions and denoise
+**Pi 5:** expected to run with software encoding: `picamera2.encoders`
+substitutes libav encoders for `H264Encoder` and `MJPEGEncoder`. They cost
+CPU, especially H.264 and MJPEG together. The helper passes them the frame
+rate as an argument (they have no `enable_sps_framerate` or
+`_enable_framerate`); whether libav then delivers the requested bitrate is
+unmeasured. The explanations of metering zones, focus regions and denoise
 would be wrong. Not tested.
 
 ## 4. HQ camera (IMX477) specific
@@ -116,6 +120,6 @@ To use another Raspberry Pi camera:
 7. Update the UI popups and HARDWARE.md tables that quote `imx477.json`.
 
 To use another board: VC4 boards need nothing beyond memory tuning; on a Pi 5
-remove the bitrate compensation (§3) and re-check CPU load with the spike. For
+re-check bitrate, CPU load and the MJPEG fallback with the spike (§3). For
 non-Raspberry-Pi hardware, write a helper that implements
 [HELPER_API.md](HELPER_API.md).
