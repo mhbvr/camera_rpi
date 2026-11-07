@@ -139,14 +139,19 @@ curl -s http://raspberrypi.local:8080/api/status
 ```
 
 ```bash
-ffplay -fflags nobuffer -f h264 http://raspberrypi.local:8080/stream.h264
+mpv --profile=low-latency --untimed --demuxer-lavf-format=h264 http://raspberrypi.local:8080/stream.h264
+```
+
+```bash
+ffplay -fflags nobuffer -flags low_delay -framedrop -f h264 http://raspberrypi.local:8080/stream.h264
 ```
 
 ```bash
 curl -s -X POST http://raspberrypi.local:8080/api/capture -o snap.jpg
 ```
 
-See [docs/REST_API.md](docs/REST_API.md).
+With HTTPS add `--tls-verify=no` (mpv) or `-tls_verify 0` (ffplay), or trust
+your CA instead: [REST_API.md](docs/REST_API.md#streamh264).
 
 ## Development without a Pi
 

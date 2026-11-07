@@ -218,18 +218,44 @@ offset size field
 ### /stream.h264
 
 The raw H.264 elementary stream (Annex-B, High profile, SPS/PPS before every
-keyframe), starting at a keyframe, for players and tools:
+keyframe), starting at a keyframe, for players and tools.
+
+Play with mpv (low latency; `--untimed` shows each frame as soon as it
+arrives instead of pacing it):
+
+```bash
+mpv --profile=low-latency --untimed --demuxer-lavf-format=h264 http://raspberrypi.local:8080/stream.h264
+```
+
+Play with ffplay:
 
 ```bash
 ffplay -fflags nobuffer -flags low_delay -framedrop -f h264 http://raspberrypi.local:8080/stream.h264
 ```
 
-```bash
-mpv --profile=low-latency --demuxer-lavf-format=h264 http://raspberrypi.local:8080/stream.h264
-```
+Record 60 s without re-encoding:
 
 ```bash
 ffmpeg -f h264 -i http://raspberrypi.local:8080/stream.h264 -c copy -t 60 clip.mp4
+```
+
+**With HTTPS** (`-tls-cert`), use the `https://` address and either trust
+your CA or skip the check:
+
+| Tool | Trust your CA | Skip the check |
+|---|---|---|
+| mpv | `--tls-verify=yes --tls-ca-file=certs/ca.crt` | `--tls-verify=no` |
+| ffplay, ffmpeg, ffprobe | `-tls_verify 1 -ca_file certs/ca.crt` | `-tls_verify 0` |
+
+Trusting the CA works only if the address you use is one of the certificate's
+names (`CERT_HOSTS` in `make cert`). For example:
+
+```bash
+mpv --tls-verify=no --profile=low-latency --untimed --demuxer-lavf-format=h264 https://raspberrypi.local:8443/stream.h264
+```
+
+```bash
+ffplay -tls_verify 0 -fflags nobuffer -flags low_delay -framedrop -f h264 https://raspberrypi.local:8443/stream.h264
 ```
 
 There are no timestamps in a raw stream: players take the frame rate from
@@ -250,6 +276,16 @@ SPS/PPS.
   last one leaves.
 - Each client always gets the newest frame; a slow client skips frames.
 - Several times the bandwidth of H.264.
+
+Play it with mpv or ffplay (TLS options as for `/stream.h264`):
+
+```bash
+mpv --profile=low-latency --untimed http://raspberrypi.local:8080/stream.mjpeg
+```
+
+```bash
+ffplay -fflags nobuffer -f mpjpeg http://raspberrypi.local:8080/stream.mjpeg
+```
 
 ## Errors
 
