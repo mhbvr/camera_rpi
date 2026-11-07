@@ -174,8 +174,10 @@ response is **the JPEG itself**:
 - `Content-Disposition: attachment; filename="IMG_YYYYMMDD_HHMMSS.jpg"`
 - `X-Capture-Width`, `X-Capture-Height` (2028 × 1520)
 
-A copy stays in `<data>/captures/`. There is no API to list or delete
-captures.
+Nothing is kept on the Pi: the file the helper writes (in RAM, see
+`-captures`) is deleted as soon as camweb has read it, before the response is
+sent. Save the response if you want to keep the image. Two captures within one
+second are named `IMG_…_1.jpg`, `IMG_…_2.jpg`, and so on.
 
 ```bash
 curl -s -X POST http://raspberrypi.local:8080/api/capture -d '{"quality": 90}' -o snap.jpg

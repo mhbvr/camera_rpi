@@ -62,7 +62,7 @@ for snapshots and `lores` for video. Three pipelines use them:
  camhelper.py (Python, Picamera2)                                 camweb (Go)                                clients
  ────────────────────────────────                                 ───────────                                ───────
 
-                ┌─ main  YUV 2028×1520 ─▶ snapshot (copy + JPEG) ─▶ file in captures/ ─────────────────────▶ POST /api/capture   download
+                ┌─ main  YUV 2028×1520 ─▶ snapshot (copy + JPEG) ─▶ JPEG file in RAM ─────────────────────▶ POST /api/capture   download
                 │                          on request, stream keeps running
  IMX477 ─▶ ISP ─┤
                 │                       ┌─▶ H264Encoder (HW) ══╗               ┌─▶ stream.Hub ───────────┬─▶ /stream        page (WebCodecs)
@@ -89,8 +89,10 @@ for snapshots and `lores` for video. Three pipelines use them:
   cannot decode H.264 (§5.3). It does not affect the H.264 stream (spike 0.10).
 - **Snapshot (on request).** `POST /api/capture` → `snapshot` over `ctl.sock`
   → the helper copies the next `main` frame (2028×1520), encodes the JPEG in a
-  thread, writes it to `<data>/captures/`, and camweb returns the file. Video
-  keeps running.
+  thread and writes it to the captures directory (RAM by default,
+  `/dev/shm/camweb-captures`); camweb reads it into memory, deletes the file at
+  once and returns the JPEG. Nothing is stored on the SD card. Video keeps
+  running.
 - **Control and events** (not drawn): settings go from `camera.Manager` to
   the helper over `ctl.sock` (`configure`, `set_controls`, `set_encoder`,
   `set_mjpeg`); the helper's `state`, `metadata` and `stats` notifications go

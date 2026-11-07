@@ -268,8 +268,13 @@ without interrupting the video**:
 - The YUV is limited range (Rec709); the helper expands it to full range
   before encoding (with 32-bit arithmetic: 16-bit overflowed and turned bright
   areas black).
-- The file is written as `<name>.jpg.tmp`, renamed, returned to the client
-  and kept in `<data>/captures/IMG_YYYYMMDD_HHMMSS.jpg`.
+- The helper writes `IMG_YYYYMMDD_HHMMSS.jpg` (via `.jpg.tmp`) into the
+  captures directory; camweb reads it into memory and deletes it at once,
+  then sends it to the client. Nothing accumulates on the Pi.
+- The captures directory (`-captures`) defaults to `/dev/shm/camweb-captures`,
+  which is in RAM, so a capture causes no SD card writes. (`/tmp` is on the SD
+  card on Raspberry Pi OS Bookworm; it is RAM only from Debian 13 on.)
+  Leftover capture files from a crash are removed at startup.
 
 Not implemented: 12 MP capture (needs a mode switch and a short pause) and DNG
 raw ([HELPER_API.md §7](HELPER_API.md#7-future-extensions-reserved-not-in-v1)).

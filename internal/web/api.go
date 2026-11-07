@@ -1,14 +1,14 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
+	"time"
 
 	"github.com/mhbvr/camera_rpi/internal/camera"
 	"github.com/mhbvr/camera_rpi/internal/proto"
@@ -96,31 +96,19 @@ func (s *Server) handleCapture(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	res, err := s.mgr.Snapshot(r.Context(), req.Quality)
+	c, err := s.mgr.Snapshot(r.Context(), req.Quality)
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	f, err := os.Open(res.File.Path)
-	if err != nil {
-		s.writeError(w, err)
-		return
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		s.writeError(w, err)
-		return
-	}
-	name := filepath.Base(res.File.Path)
 	h := w.Header()
 	h.Set("Content-Type", "image/jpeg")
-	h.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
-	h.Set("X-Capture-Width", fmt.Sprint(res.File.Width))
-	h.Set("X-Capture-Height", fmt.Sprint(res.File.Height))
+	h.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", c.Name))
+	h.Set("X-Capture-Width", fmt.Sprint(c.Width))
+	h.Set("X-Capture-Height", fmt.Sprint(c.Height))
 	h.Set("Cache-Control", "no-store")
-	s.log.Printf("web: snapshot %s (%dx%d, %d bytes, timing %v)", name, res.File.Width, res.File.Height, st.Size(), res.TimingMS)
-	http.ServeContent(w, r, name, st.ModTime(), f)
+	s.log.Printf("web: snapshot %s (%dx%d, %d bytes, timing %v)", c.Name, c.Width, c.Height, len(c.JPEG), c.TimingMS)
+	http.ServeContent(w, r, c.Name, time.Now(), bytes.NewReader(c.JPEG))
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

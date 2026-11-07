@@ -22,7 +22,7 @@ var ErrNoCamera = errors.New("camera helper not connected")
 // Options configures a Manager.
 type Options struct {
 	ConfigPath  string // where the config is persisted
-	CapturesDir string // where snapshots are written
+	CapturesDir string // where the helper writes snapshots; files live only until read (use a RAM-backed dir)
 	HFlip       bool
 	VFlip       bool
 	Log         *log.Logger
@@ -47,6 +47,9 @@ type Manager struct {
 
 	mjpegWanted bool          // at least one MJPEG viewer
 	mjpegSync   chan struct{} // signalled when mjpegWanted changes (capacity 1)
+
+	lastStem string // capture names: IMG_<time>, with _1, _2 … within one second (opMu)
+	nameSeq  int
 }
 
 // NewManager returns a manager starting from cfg.
@@ -56,6 +59,7 @@ func NewManager(cfg Config, hub *stream.Hub, opt Options) *Manager {
 	}
 	m := &Manager{opt: opt, hub: hub, cfg: cfg, frames: stream.NewFrameHub(), mjpegSync: make(chan struct{}, 1)}
 	m.frames.OnCount = m.mjpegViewers
+	m.removeCaptureFiles()
 	m.publishState("waiting", "waiting for camera helper")
 	return m
 }
@@ -337,46 +341,81 @@ func (m *Manager) callApply(ctx context.Context, sess *helper.Session, hello *pr
 	return nil
 }
 
+// Capture is a snapshot JPEG, held in memory.
+type Capture struct {
+	Name     string // download name: IMG_YYYYMMDD_HHMMSS.jpg
+	JPEG     []byte
+	Width    int
+	Height   int
+	TimingMS map[string]float64 // helper timings (capture, encode)
+}
+
 // Snapshot captures a JPEG from the live main stream. quality 0 means the
-// configured quality.
-func (m *Manager) Snapshot(ctx context.Context, quality int) (proto.SnapshotResult, error) {
+// configured quality. The helper writes the JPEG to CapturesDir; it is read
+// into memory and the file is deleted at once, so nothing accumulates on the
+// Pi.
+func (m *Manager) Snapshot(ctx context.Context, quality int) (Capture, error) {
 	m.opMu.Lock()
 	defer m.opMu.Unlock()
 	m.mu.RLock()
 	sess, cfg := m.sess, m.cfg
 	m.mu.RUnlock()
-	var res proto.SnapshotResult
 	if sess == nil {
-		return res, ErrNoCamera
+		return Capture{}, ErrNoCamera
 	}
 	if quality == 0 {
 		quality = cfg.Still.Quality
 	}
 	if err := FieldByPath("still.quality").Check(float64(quality)); err != nil {
-		return res, err
+		return Capture{}, err
 	}
 	dir, err := filepath.Abs(m.opt.CapturesDir)
 	if err != nil {
-		return res, err
+		return Capture{}, err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return res, err
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return Capture{}, err
 	}
-	base := uniqueBase(dir, time.Now())
+	stem := m.captureStem(time.Now())
+	base := filepath.Join(dir, stem)   // the helper writes base.jpg (via base.jpg.tmp)
+	defer os.Remove(base + ".jpg.tmp") // left behind if the helper failed mid-write
+	defer os.Remove(base + ".jpg")
+
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	err = sess.Call(cctx, proto.MethodSnapshot, proto.SnapshotParams{Path: base, Quality: quality}, &res)
-	return res, err
+	var res proto.SnapshotResult
+	if err := sess.Call(cctx, proto.MethodSnapshot, proto.SnapshotParams{Path: base, Quality: quality}, &res); err != nil {
+		return Capture{}, err
+	}
+	jpeg, err := os.ReadFile(base + ".jpg") // our own path, not the one the helper reports
+	if err != nil {
+		return Capture{}, err
+	}
+	return Capture{Name: stem + ".jpg", JPEG: jpeg, Width: res.File.Width, Height: res.File.Height, TimingMS: res.TimingMS}, nil
 }
 
-func uniqueBase(dir string, t time.Time) string {
-	stem := filepath.Join(dir, "IMG_"+t.Format("20060102_150405"))
-	base := stem
-	for i := 1; ; i++ {
-		if _, err := os.Stat(base + ".jpg"); os.IsNotExist(err) {
-			return base
+// captureStem returns IMG_YYYYMMDD_HHMMSS, with _1, _2 … for further
+// captures within the same second. Called with opMu held.
+func (m *Manager) captureStem(t time.Time) string {
+	stem := "IMG_" + t.Format("20060102_150405")
+	if stem != m.lastStem {
+		m.lastStem, m.nameSeq = stem, 0
+		return stem
+	}
+	m.nameSeq++
+	return fmt.Sprintf("%s_%d", stem, m.nameSeq)
+}
+
+// removeCaptureFiles deletes capture files left in CapturesDir by a crash.
+// Only capture names are touched, so CapturesDir may be a shared directory.
+func (m *Manager) removeCaptureFiles() {
+	for _, pattern := range []string{"IMG_*.jpg", "IMG_*.jpg.tmp"} {
+		files, _ := filepath.Glob(filepath.Join(m.opt.CapturesDir, pattern))
+		for _, f := range files {
+			if err := os.Remove(f); err == nil {
+				m.opt.Log.Printf("camera: removed leftover capture %s", f)
+			}
 		}
-		base = fmt.Sprintf("%s_%d", stem, i)
 	}
 }
 

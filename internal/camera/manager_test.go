@@ -207,13 +207,16 @@ func TestManagerFlow(t *testing.T) {
 
 	// snapshot
 	res, err := m.Snapshot(ctx, 0)
-	if err != nil || res.File.Width != 2028 {
+	if err != nil || res.Width != 2028 || string(res.JPEG) != "jpeg" || !strings.HasPrefix(res.Name, "IMG_") {
 		t.Fatalf("snapshot %+v %v", res, err)
 	}
 	var sp proto.SnapshotParams
 	_ = json.Unmarshal(f.last().Params, &sp)
 	if sp.Quality != 95 || filepath.Dir(sp.Path) != filepath.Join(dir, "captures") {
 		t.Fatalf("snapshot params %+v", sp)
+	}
+	if left, _ := os.ReadDir(filepath.Join(dir, "captures")); len(left) != 0 {
+		t.Fatalf("capture file not deleted: %v", left)
 	}
 	// a second snapshot in the same second gets a unique name
 	if _, err := m.Snapshot(ctx, 80); err != nil {
@@ -313,4 +316,18 @@ func TestManagerMJPEG(t *testing.T) {
 
 	frames.Unsubscribe(sub) // last viewer gone → encoder off
 	waitFor(t, func() bool { p, _ := lastMJPEG(); return !p.Enabled })
+}
+
+func TestLeftoverCapturesRemoved(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"IMG_20261107_010101.jpg", "IMG_20261107_010102.jpg.tmp", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	NewManager(Defaults(), stream.NewHub(8), Options{ConfigPath: filepath.Join(dir, "c.json"), CapturesDir: dir, Log: log.New(io.Discard, "", 0)})
+	left, _ := os.ReadDir(dir)
+	if len(left) != 1 || left[0].Name() != "notes.txt" {
+		t.Fatalf("left in captures dir: %v", left)
+	}
 }

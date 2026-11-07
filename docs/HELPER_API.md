@@ -175,7 +175,7 @@ Captures one frame from the running `main` stream as JPEG **without
 interrupting video**.
 ```json
 {"jsonrpc":"2.0","id":4,"method":"snapshot","params":{
-  "path": "/home/pi/data/captures/IMG_20261106_134501",   // no extension; helper appends .jpg
+  "path": "/dev/shm/camweb-captures/IMG_20261106_134501",   // no extension; helper appends .jpg
   "quality": 95
 }}
 → {"jsonrpc":"2.0","id":4,"result":{
