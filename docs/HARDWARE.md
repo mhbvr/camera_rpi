@@ -196,8 +196,11 @@ firmware's rate control, MJPEG included, uses the frame rate it is given.
 - On a Pi 5 Picamera2 substitutes libav software encoders, which take
   `framerate` as an argument; the helper passes it there (HW_SPECIFIC.md).
 - With the frame rate set, the H.264 SPS timing information (which the driver
-  always writes, [#L2792](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c#L2792)) should state the real frame rate
-  (not checked yet).
+  always writes, [#L2792](https://github.com/raspberrypi/linux/blob/bba53a117a4a5c29da892962332ff1605990e17a/drivers/staging/vc04_services/bcm2835-codec/bcm2835-v4l2-codec.c#L2792)) states the real frame rate. Checked on the Pi
+  at 8 fps: `num_units_in_tick = 1`, `time_scale = 16`,
+  `fixed_frame_rate_flag = 1`, i.e. 16 / (2 × 1) = 8 fps (H.264 counts two
+  ticks per frame). ffprobe's `r_frame_rate` shows the tick rate for a raw
+  stream (16/1 here), twice the frame rate.
 - A C++ helper using V4L2 directly would call `VIDIOC_S_PARM`.
 
 ## 4. Settings reference

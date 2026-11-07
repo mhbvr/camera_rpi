@@ -233,10 +233,10 @@ ffmpeg -f h264 -i http://raspberrypi.local:8080/stream.h264 -c copy -t 60 clip.m
 ```
 
 There are no timestamps in a raw stream: players take the frame rate from
-the SPS timing information. The helper gives the encoder the real frame rate,
-so it should be correct ([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps); not checked yet).
-If timing is off, pass the real rate (`stream.fps` from [status](#status)), for
-example `-framerate 15` before `-i` for ffmpeg/ffplay. After a stream-size change the stream continues with new
+the SPS timing information, which states the real frame rate
+([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)). Note
+that ffprobe's `r_frame_rate` for this stream shows twice the frame rate (the
+H.264 tick rate); that is expected. After a stream-size change the stream continues with new
 SPS/PPS.
 
 ### /stream.mjpeg
