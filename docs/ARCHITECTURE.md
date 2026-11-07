@@ -309,7 +309,7 @@ glass-to-glass is measured by filming an on-screen millisecond clock.
 |---|---|
 | Python GIL: a snapshot's JPEG encode delays the encoder output thread | measured (spike 0.5): callback interval p95 34.5 → 43 ms, no dropped frames. Accepted; a subprocess encoder is the fix if needed |
 | No helper-side queue: if Go stops reading `video.sock`, the encoder blocks | Go reads it in a dedicated goroutine that only hands frames to the non-blocking hub; 1 MiB `SO_SNDBUF` absorbs hiccups |
-| Picamera2 API differences between versions | the helper probes optional arguments (`profile`, `framerate`) and accepts extra `outputframe` args |
+| Picamera2 API differences between versions | Picamera2 ≥ 0.3.19 required; the helper accepts extra `outputframe` args and handles the Pi 5 libav encoder arguments |
 | TCP delay build-up over the internet | drop-to-keyframe, small send buffer; WebRTC is the upgrade path |
 | WebCodecs needs a secure context | built-in TLS, SSH forward or HTTPS tunnel; the page explains it and falls back to MJPEG |
 | Hardware assumptions (sensor mode, sizes, tuning tables, encoder quirks) | concentrated in `internal/camera/config.go` and the helper; see [HW_SPECIFIC.md](HW_SPECIFIC.md) |

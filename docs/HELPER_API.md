@@ -196,14 +196,16 @@ same `lores` stream, [ARCHITECTURE.md §5.3](ARCHITECTURE.md#53-mjpeg-fallback))
 (restarted with the pipeline) until disabled. Frames arrive on `video.sock` as
 type 4.
 ```json
-{"jsonrpc":"2.0","id":6,"method":"set_mjpeg","params":{"enabled":true,"bitrate":8000000,"skip":2}}
+{"jsonrpc":"2.0","id":6,"method":"set_mjpeg","params":{"enabled":true,"bitrate":8000000,"skip":2,"framerate":30.0}}
 → {"jsonrpc":"2.0","id":6,"result":{"active":true}}
 ```
 `skip` = encode every skip-th camera frame (Picamera2 `frame_skip_count`).
-`bitrate` is the bitrate to deliver. The Picamera2 helper gives the MJPEG
-encoder its frame rate (fps / skip) through the attributes `MJPEGEncoder`
-inherits from `V4L2Encoder` ([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)). The server re-sends
-`set_mjpeg` after a frame-rate change.
+`framerate` = the camera frame rate (as in `set_encoder`), so the MJPEG
+encoder runs at framerate / skip. `bitrate` is the bitrate to deliver. The
+Picamera2 helper gives the MJPEG encoder its frame rate through the
+attributes `MJPEGEncoder` inherits from `V4L2Encoder`
+([HARDWARE.md §3.1](HARDWARE.md#31-why-the-encoders-assume-30-fps)). The
+server re-sends `set_mjpeg` after a frame-rate change.
 `active` is false when the camera is not streaming (the encoder then starts
 with the next `configure`).
 
@@ -263,7 +265,9 @@ offset size field
   **Annex-B** format (start codes included). With `repeat=True`, IDR AUs carry
   SPS+PPS (flags bit1). The first AU after `stream_start` **must be an IDR**.
 - **type 2 (stream_start):** JSON payload
-  `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30, "framerate": 30.0}`.
+  `{"session": 3, "codec": "h264", "width": 1440, "height": 1080, "fps": 30.0, "profile": "high", "bitrate": 6000000, "iperiod": 30}`.
+  `fps` is the frame rate the encoder was started with (`framerate` from
+  `configure` / `set_encoder`).
   Sent whenever the encoder (re)starts. The server resets all viewers to
   "wait for keyframe".
 - **type 3 (stream_end):** JSON `{"session": 3, "reason": "reconfigure"|"encoder"|"stop"|"error"}`.

@@ -121,7 +121,7 @@ connected stream clients:
 {
   "state":    {"event": "state", "state": "streaming"},
   "camera":   {"event": "camera", "model": "imx477", "impl": "picamera2", "impl_version": "0.3.27", "sensor_max_gain": 22.26},
-  "stream":   {"event": "stream", "session": 1, "codec": "h264", "width": 1440, "height": 1080, "fps": 30, "profile": "high", "bitrate": 6000000, "iperiod": 30, "framerate": 30},
+  "stream":   {"event": "stream", "session": 1, "codec": "h264", "width": 1440, "height": 1080, "fps": 30, "profile": "high", "bitrate": 6000000, "iperiod": 30},
   "metadata": {"event": "metadata", "data": {"ExposureTime": 33013, "AnalogueGain": 16.0, "Lux": 12.3, "FocusFoM": 1234, "...": "..."}},
   "stats":    {"event": "stats", "data": {"fps": 30, "frames": 12345, "latency_ms": 54.1}},
   "clients":  {"stream": 1, "mjpeg": 0}
@@ -139,7 +139,7 @@ The server forwards these JSON events. Each has an `event` field.
 |---|---|---|
 | `state` | `state`, optional `detail` | on every change. `waiting` (no helper yet), `starting`, `streaming`, `reconfiguring`, `idle`, `helper-restarting`, `error` |
 | `camera` | `model`, `impl`, `impl_version`, `sensor_max_gain` | when a helper connects |
-| `stream` | `session`, `codec`, `width`, `height`, `fps`, `profile`, `bitrate`, `iperiod`, `framerate` | when the H.264 encoder (re)starts; video continues from a keyframe |
+| `stream` | `session`, `codec`, `width`, `height`, `fps`, `profile`, `bitrate`, `iperiod` | when the H.264 encoder (re)starts; video continues from a keyframe |
 | `metadata` | `data`: libcamera metadata (`ExposureTime` µs, `AnalogueGain`, `DigitalGain`, `ColourGains`, `ColourTemperature` K, `Lux`, `FrameDuration` µs, `FocusFoM`, `AeState`, `SensorTimestamp`) | about 2 Hz while streaming ([HARDWARE.md §6](HARDWARE.md#6-metadata-and-actual-values)) |
 | `stats` | `data`: `fps`, `frames`, `latency_ms` (sensor → helper socket) | 1 Hz while streaming |
 | `drop` | `dropped`, `total` | `/stream` only: frames this client lost because it fell behind |

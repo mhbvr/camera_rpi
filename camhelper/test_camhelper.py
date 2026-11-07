@@ -190,6 +190,38 @@ class DispatcherTest(unittest.TestCase):
         self.d.handle(json.dumps({"jsonrpc": "2.0", "id": 3, "method": "nope"}).encode())
         self.assertEqual(self.ctl.sent[-1], {"id": 3, "error": {"code": camhelper.E_METHOD_NOT_FOUND, "message": "unknown method nope"}})
 
+    def test_routes_and_lock(self):
+        calls = []
+
+        class Cam:
+            camera_op = camhelper.Camera.camera_op  # the real lock handling
+
+            def state(self_, *a):
+                pass
+
+            def configure(self_, p):
+                calls.append(("configure", self_.lock.locked()))
+                return {"session": 1}
+
+        cam = Cam()
+        cam.lock = camhelper.threading.Lock()
+        d = camhelper.Dispatcher(cam, self.ctl)
+        d.handle(json.dumps({"jsonrpc": "2.0", "id": 5, "method": "configure", "params": {}}).encode())
+        for _ in range(100):
+            if self.ctl.sent and self.ctl.sent[-1]["id"] == 5:
+                break
+            camhelper.time.sleep(0.01)
+        self.assertEqual(self.ctl.sent[-1], {"id": 5, "result": {"session": 1}})
+        self.assertEqual(calls, [("configure", True)])  # ran with the camera lock held
+        cam.lock.acquire()  # a second camera operation while one runs -> busy
+        d.handle(json.dumps({"jsonrpc": "2.0", "id": 6, "method": "configure", "params": {}}).encode())
+        for _ in range(100):
+            if self.ctl.sent[-1]["id"] == 6:
+                break
+            camhelper.time.sleep(0.01)
+        self.assertEqual(self.ctl.sent[-1]["error"]["code"], camhelper.E_BUSY)
+        cam.lock.release()
+
     def test_inline_and_shutdown(self):
         self.d.handle(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "set_controls", "params": {"controls": {}}}).encode())
         self.assertEqual(self.ctl.sent[-1], {"id": 1, "result": {}})

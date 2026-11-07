@@ -277,7 +277,7 @@ func TestManagerMJPEG(t *testing.T) {
 	}
 
 	sub := frames.Subscribe() // first viewer → encoder on
-	waitFor(t, func() bool { p, ok := lastMJPEG(); return ok && p.Enabled && p.Bitrate == 8_000_000 && p.Skip == 2 })
+	waitFor(t, func() bool { p, ok := lastMJPEG(); return ok && p.Enabled && p.Bitrate == 8_000_000 && p.Skip == 2 && p.FrameRate == 30 })
 
 	// JPEG frames from the helper reach the viewer
 	m.OnVideo(&proto.VideoMsg{Type: proto.VideoJPEG, Payload: []byte{0xff, 0xd8}})
@@ -308,6 +308,9 @@ func TestManagerMJPEG(t *testing.T) {
 	f.mu.Unlock()
 	if !resent {
 		t.Fatal("fps change did not re-send set_mjpeg")
+	}
+	if p, _ := lastMJPEG(); p.FrameRate != 20 {
+		t.Fatalf("set_mjpeg after fps change: %+v", p)
 	}
 
 	frames.Unsubscribe(sub) // last viewer gone → encoder off

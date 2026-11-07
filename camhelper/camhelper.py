@@ -15,6 +15,7 @@ Dependencies: Raspberry Pi OS python3-picamera2 (with numpy, simplejpeg).
 
 import argparse
 import collections
+import contextlib
 import json
 import logging
 import os
@@ -204,25 +205,21 @@ class Camera:
         self.picam2 = Picamera2()
         self.lock = threading.Lock()  # one camera operation at a time
         self.streaming = False
-        self.encoder = None
-        self.output = None
-        self.enc_params = {}
         self.lores_size = (0, 0)
-        self.fps = 0.0
-        self.session = 0
-        self.seq = 0
-        self.frames = 0
         self.metadata_hz = 2.0
         self._last_md = 0.0
         self.video_failed = False
+        # H.264 stream: parameters from configure / set_encoder.
+        self.h264 = EncoderSlot(self.picam2, self._on_h264_frame)
+        self.enc_params = {}
+        self.session = 0
+        self.frames = 0
+        self.latency_ms = collections.deque(maxlen=60)  # sensor timestamp -> socket write
         # MJPEG fallback (ARCHITECTURE.md §5.3): a second, hardware MJPEG encoder on
         # the same lores stream, running only while the server asks for it.
+        self.mjpeg = EncoderSlot(self.picam2, self._on_jpeg_frame)
         self.mjpeg_enabled = False
-        self.mjpeg_params = {"bitrate": 8_000_000, "skip": 2}
-        self.mjpeg_encoder = None
-        self.mjpeg_output = None
-        self.mjpeg_seq = 0
-        self.latency_ms = collections.deque(maxlen=60)  # sensor timestamp -> socket write
+        self.mjpeg_params = {"bitrate": 8_000_000, "skip": 2, "framerate": DEFAULT_FPS}
         self.picam2.post_callback = self._post_callback
 
     # -- info
@@ -312,8 +309,6 @@ class Camera:
         self.metadata_hz = float(p.get("metadata_hz", 2))
         self.enc_params = _enc_params(enc)
         self.lores_size = tuple(lores["size"])
-        fdl = controls.get("FrameDurationLimits")
-        self.fps = round(1e6 / fdl[0], 3) if fdl else 0.0
         self._start_encoder()
         if self.mjpeg_enabled:
             self._start_mjpeg()
@@ -337,18 +332,21 @@ class Camera:
 
     def set_mjpeg(self, p):
         """Start/stop the MJPEG fallback encoder. Params: enabled (bool),
-        bitrate (bps), skip (encode every skip-th frame)."""
+        bitrate (bps), skip (encode every skip-th frame), framerate (camera
+        frame rate)."""
+        old = self.mjpeg_params
         try:
             enabled = bool(p["enabled"])
-            params = {"bitrate": int(p.get("bitrate", self.mjpeg_params["bitrate"])),
-                      "skip": max(1, int(p.get("skip", self.mjpeg_params["skip"])))}
+            params = {"bitrate": int(p.get("bitrate", old["bitrate"])),
+                      "skip": max(1, int(p.get("skip", old["skip"]))),
+                      "framerate": float(p.get("framerate") or old["framerate"])}
         except (KeyError, TypeError, ValueError) as e:
             raise RpcError(E_INVALID_PARAMS, "bad set_mjpeg params: %s" % e)
         self._stop_mjpeg()
         self.mjpeg_enabled, self.mjpeg_params = enabled, params
         if enabled and self.streaming:
             self._start_mjpeg()
-        return {"active": self.mjpeg_encoder is not None}
+        return {"active": self.mjpeg.running}
 
     def set_controls(self, p):
         """Live controls; does not take self.lock (handled inline)."""
@@ -357,8 +355,6 @@ class Camera:
         except (KeyError, TypeError, AttributeError) as e:
             raise RpcError(E_INVALID_PARAMS, "bad set_controls params: %s" % e)
         self._check_controls(controls)
-        if "FrameDurationLimits" in controls:
-            self.fps = round(1e6 / controls["FrameDurationLimits"][0], 3)
         self.picam2.set_controls(controls)
         return {}
 
@@ -372,7 +368,7 @@ class Camera:
         if not path or not 1 <= quality <= 100:
             raise RpcError(E_INVALID_PARAMS, "path required, quality 1..100", {"field": "quality"})
         t0 = time.monotonic()
-        with self._camera_op():
+        with self.camera_op():
             if not self.streaming:
                 raise RpcError(E_NOT_CONFIGURED, "not streaming")
             cfg = self.picam2.camera_configuration()
@@ -420,10 +416,15 @@ class Camera:
 
     # -- internals
 
-    def _camera_op(self):
+    @contextlib.contextmanager
+    def camera_op(self):
+        """Hold the camera lock for one operation; busy error if it is taken."""
         if not self.lock.acquire(blocking=False):
             raise RpcError(E_BUSY, "another camera operation is running")
-        return _Release(self.lock)
+        try:
+            yield
+        finally:
+            self.lock.release()
 
     def _check_controls(self, controls):
         known = self.picam2.camera_controls
@@ -434,55 +435,30 @@ class Camera:
     def _start_encoder(self):
         from picamera2.encoders import H264Encoder
         self.session += 1
-        self.seq = 0
-        fr = self.enc_params.get("framerate") or self.fps or DEFAULT_FPS
-        enc = make_h264_encoder(H264Encoder, self.enc_params["bitrate"], self.enc_params["iperiod"], fr)
-        if self.output is None:
-            self.output = _make_output(self)
+        fps = self.enc_params.get("framerate") or DEFAULT_FPS
+        enc = make_h264_encoder(H264Encoder, self.enc_params["bitrate"], self.enc_params["iperiod"], fps)
         self.video.send_json(T_STREAM_START, {
             "session": self.session, "codec": "h264",
             "width": self.lores_size[0], "height": self.lores_size[1],
-            "fps": self.fps, "profile": "high",
+            "fps": fps, "profile": "high",
             "bitrate": self.enc_params["bitrate"], "iperiod": self.enc_params["iperiod"],
-            "framerate": fr,
         })
-        self.picam2.start_encoder(enc, self.output, name="lores")
-        self.encoder = enc
+        self.h264.start(enc)
 
     def _stop_encoder(self, reason):
-        if self.encoder is not None:
-            self.picam2.stop_encoder(self.encoder)
-            self.encoder = None
+        if self.h264.stop():
             self.video.send_json(T_STREAM_END, {"session": self.session, "reason": reason})
 
     def _start_mjpeg(self):
         from picamera2.encoders import MJPEGEncoder
-        skip = self.mjpeg_params["skip"]
-        enc = make_mjpeg_encoder(MJPEGEncoder, self.mjpeg_params["bitrate"], self.fps or DEFAULT_FPS, skip)
-        if self.mjpeg_output is None:
-            self.mjpeg_output = _make_jpeg_output(self)
-        self.mjpeg_seq = 0
-        self.picam2.start_encoder(enc, self.mjpeg_output, name="lores")
-        self.mjpeg_encoder = enc
-        log.info("MJPEG encoder started (bitrate %d, every %d. frame)", self.mjpeg_params["bitrate"], skip)
+        p = self.mjpeg_params
+        self.mjpeg.start(make_mjpeg_encoder(MJPEGEncoder, p["bitrate"], p["framerate"], p["skip"]))
+        log.info("MJPEG encoder started (bitrate %d, every %d. frame, %.1f fps)",
+                 p["bitrate"], p["skip"], p["framerate"] / p["skip"])
 
     def _stop_mjpeg(self):
-        if self.mjpeg_encoder is not None:
-            self.picam2.stop_encoder(self.mjpeg_encoder)
-            self.mjpeg_encoder = None
+        if self.mjpeg.stop():
             log.info("MJPEG encoder stopped")
-
-    def on_jpeg(self, frame, timestamp):
-        """Called from the MJPEG encoder thread: one complete JPEG."""
-        if self.video_failed:
-            return
-        try:
-            self.video.send(T_JPEG, 0, self.mjpeg_seq, int(timestamp or 0), bytes(frame))
-        except OSError as e:
-            log.error("video socket write failed: %s", e)
-            self.video_failed = True
-            return
-        self.mjpeg_seq += 1
 
     def _stop_stream(self, reason):
         self._stop_mjpeg()
@@ -490,37 +466,45 @@ class Camera:
         self.picam2.stop()
         self.streaming = False
 
-    def on_frame(self, frame, keyframe, timestamp):
-        """Called from the encoder thread for every encoded frame."""
-        if self.video_failed:
-            return
+    def _on_h264_frame(self, frame, keyframe, timestamp):
+        """Encoder thread: one encoded H.264 frame."""
         data = bytes(frame)
         flags = F_KEY if keyframe else 0
         if keyframe and has_sps(data):
             flags |= F_CONFIG
         # Picamera2 passes the timestamp relative to the encoder's first frame
-        # (M0 spike: 0, 33324, ...); encoder.firsttimestamp holds that frame's
+        # (spike 0.2: 0, 33324, ...); encoder.firsttimestamp holds that frame's
         # SensorTimestamp in µs (CLOCK_MONOTONIC), giving the absolute time.
         pts = int(timestamp or 0)
-        first = getattr(self.encoder, "firsttimestamp", None) if self.encoder is not None else None
+        first = getattr(self.h264.encoder, "firsttimestamp", None)
         if isinstance(first, int):
             pts += first
             lat = (time.monotonic_ns() // 1000 - pts) / 1000.0
             if 0 <= lat < 5000:
                 self.latency_ms.append(lat)
+        if self._send_video(T_AU, flags, self.h264.seq, pts, data):
+            self.frames += 1
+
+    def _on_jpeg_frame(self, frame, keyframe, timestamp):
+        """MJPEG encoder thread: one complete JPEG."""
+        self._send_video(T_JPEG, 0, self.mjpeg.seq, int(timestamp or 0), bytes(frame))
+
+    def _send_video(self, type_, flags, seq, pts, payload):
+        """Write one video message. If the server is gone, stop reading ctl so
+        main() exits (the server starts a new helper)."""
+        if self.video_failed:
+            return False
         try:
-            self.video.send(T_AU, flags, self.seq, pts, data)
+            self.video.send(type_, flags, seq, pts, payload)
+            return True
         except OSError as e:
-            # The server is gone: stop reading ctl so main() exits.
             self.video_failed = True
             log.error("video socket write failed: %s", e)
             try:
                 self.ctl.sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            return
-        self.seq += 1
-        self.frames += 1
+            return False
 
     def _post_callback(self, request):
         """Camera thread: sample metadata at metadata_hz."""
@@ -537,36 +521,51 @@ class Camera:
             log.warning("metadata: %s", e)
 
 
-class _Release:
-    def __init__(self, lock):
-        self.lock = lock
+class EncoderSlot:
+    """One encoder on the lores stream: starts and stops it, and counts its
+    frames (`seq`, reset at each start). `on_frame(frame, keyframe,
+    timestamp)` is called from the encoder thread for every encoded frame."""
 
-    def __enter__(self):
-        return self
+    def __init__(self, picam2, on_frame):
+        self.picam2 = picam2
+        self.on_frame = on_frame
+        self.encoder = None
+        self.output = None
+        self.seq = 0
 
-    def __exit__(self, *exc):
-        self.lock.release()
-        return False
+    @property
+    def running(self):
+        return self.encoder is not None
+
+    def start(self, encoder):
+        if self.output is None:
+            self.output = _callback_output(self._frame)
+        self.seq = 0
+        self.picam2.start_encoder(encoder, self.output, name="lores")
+        self.encoder = encoder
+
+    def stop(self):
+        """Stop the encoder; False if it was not running."""
+        if self.encoder is None:
+            return False
+        self.picam2.stop_encoder(self.encoder)
+        self.encoder = None
+        return True
+
+    def _frame(self, frame, keyframe, timestamp):
+        self.on_frame(frame, keyframe, timestamp)
+        self.seq += 1
 
 
-def _make_output(cam):
+def _callback_output(fn):
+    """A Picamera2 Output that passes every encoded frame to fn."""
     from picamera2.outputs import Output
 
-    class SocketOutput(Output):
+    class CallbackOutput(Output):
         def outputframe(self, frame, keyframe=True, timestamp=None, *args, **kwargs):
-            cam.on_frame(frame, keyframe, timestamp)
+            fn(frame, keyframe, timestamp)
 
-    return SocketOutput()
-
-
-def _make_jpeg_output(cam):
-    from picamera2.outputs import Output
-
-    class JpegOutput(Output):
-        def outputframe(self, frame, keyframe=True, timestamp=None, *args, **kwargs):
-            cam.on_jpeg(frame, timestamp)
-
-    return JpegOutput()
+    return CallbackOutput()
 
 
 # The Pi's V4L2 encoders (bcm2835-codec) plan bits per frame for 30 fps unless
@@ -653,9 +652,22 @@ def _enum_values(name):
 # ---------------------------------------------------------------- RPC
 
 class Dispatcher:
-    # Camera methods run in a worker thread so that quick ones (set_controls)
-    # are never blocked behind them. Responses may therefore be out of order.
-    CAMERA_METHODS = {"configure", "snapshot", "set_encoder", "set_mjpeg", "stop"}
+    """Routes JSON-RPC requests to Camera methods.
+
+    How each method runs:
+      inline - in the ctl reader thread (quick, never blocked behind others)
+      locked - in its own thread, holding the camera lock (busy error if taken)
+      thread - in its own thread; the method takes the lock itself
+    Methods in threads can answer out of order; the server matches by id.
+    """
+    METHODS = {
+        "set_controls": "inline",
+        "configure": "locked",
+        "set_encoder": "locked",
+        "set_mjpeg": "locked",
+        "stop": "locked",
+        "snapshot": "thread",  # holds the lock only while capturing, not while encoding
+    }
 
     def __init__(self, cam, ctl):
         self.cam, self.ctl = cam, ctl
@@ -678,25 +690,26 @@ class Dispatcher:
         if method == "shutdown":
             self.ctl.reply(id_, {})
             return False
-        if method == "set_controls":
-            self._run(id_, self.cam.set_controls, params)
-        elif method in self.CAMERA_METHODS:
-            fn = {"configure": self._locked(self.cam.configure),
-                  "set_encoder": self._locked(self.cam.set_encoder),
-                  "set_mjpeg": self._locked(self.cam.set_mjpeg),
-                  "stop": self._locked(self.cam.stop),
-                  "snapshot": self.cam.snapshot}[method]
-            threading.Thread(target=self._run, args=(id_, fn, params), daemon=True,
-                             name="rpc-%s-%s" % (method, id_)).start()
-        else:
+        mode = self.METHODS.get(method)
+        if mode is None:
             self.ctl.reply_error(id_, E_METHOD_NOT_FOUND, "unknown method %s" % method)
+            return True
+        fn = getattr(self.cam, method)
+        if mode == "inline":
+            self._run(id_, fn, params)
+            return True
+        if mode == "locked":
+            fn = self._locked(fn)
+        threading.Thread(target=self._run, args=(id_, fn, params), daemon=True,
+                         name="rpc-%s-%s" % (method, id_)).start()
         return True
 
     def _locked(self, fn):
-        def wrapper(params):
-            with self.cam._camera_op():
+        def locked(params):
+            with self.cam.camera_op():
                 return fn(params)
-        return wrapper
+        locked.__name__ = fn.__name__
+        return locked
 
     def _run(self, id_, fn, params):
         try:

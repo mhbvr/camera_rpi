@@ -128,14 +128,14 @@ func (m *Manager) syncMJPEG(ctx context.Context) {
 
 func (m *Manager) syncMJPEGLocked(ctx context.Context) {
 	m.mu.RLock()
-	sess, want, cfg := m.sess, m.mjpegWanted, m.cfg.MJPEG
+	sess, want, cfg := m.sess, m.mjpegWanted, m.cfg
 	m.mu.RUnlock()
 	if sess == nil {
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	p := proto.SetMJPEGParams{Enabled: want, Bitrate: cfg.Bitrate, Skip: cfg.Skip}
+	p := proto.SetMJPEGParams{Enabled: want, Bitrate: cfg.MJPEG.Bitrate, Skip: cfg.MJPEG.Skip, FrameRate: EncoderFrameRate(cfg.Controls)}
 	if err := sess.Call(cctx, proto.MethodSetMJPEG, p, nil); err != nil {
 		m.opt.Log.Printf("camera: set_mjpeg %+v: %v", p, err)
 		return
