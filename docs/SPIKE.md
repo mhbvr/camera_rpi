@@ -54,8 +54,11 @@ Conventions:
 | 0.10 | Can MJPEG run next to H.264? | yes: no H.264 drops, about +5 % CPU, MJPEG bitrate within ±10 % | MJPEG fallback |
 
 Open follow-ups: visual aspect check of the 0.6 images; glass-to-glass
-latency through camweb; check that the H.264 SPS carries the real frame rate
-(`ffprobe` on `/stream.h264` at 15 fps).
+latency through camweb.
+
+Checked separately (2026-11-07): the H.264 SPS states the frame rate set in
+camweb (8 fps → `time_scale = 16`, `num_units_in_tick = 1`, i.e. 8 fps;
+HARDWARE.md §3.1).
 
 ---
 
