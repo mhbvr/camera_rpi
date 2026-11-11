@@ -155,6 +155,70 @@ curl -s -X POST http://raspberrypi.local:8080/api/capture -o snap.jpg
 With HTTPS add `--tls-verify=no` (mpv) or `-tls_verify 0` (ffplay), or trust
 your CA instead: [REST_API.md](docs/REST_API.md#streamh264).
 
+## Using it as a webcam in video calls
+
+camweb is not a USB webcam, but the laptop can turn `/stream.h264` into a
+virtual camera that Zoom, Meet, Teams etc. list like any other. Camera
+settings can still be changed on the camweb page during the call.
+
+**Linux: v4l2loopback + ffmpeg**
+
+1. Install the loopback module (built by DKMS, so the headers of the running
+   kernel are needed) and ffmpeg:
+
+   - Arch: `sudo pacman -S --needed v4l2loopback-dkms v4l2loopback-utils linux-headers ffmpeg`
+     (`linux-lts-headers`, `linux-zen-headers`, … for other kernels)
+   - Debian/Ubuntu: `sudo apt install v4l2loopback-dkms ffmpeg`
+
+2. Create the virtual camera:
+
+   ```bash
+   sudo modprobe v4l2loopback video_nr=10 card_label="Pi HQ Camera" exclusive_caps=1
+   ```
+
+3. Feed it from the Pi and keep this running during the call:
+
+   ```bash
+   ffmpeg -fflags nobuffer -flags low_delay -f h264 -i http://raspberrypi.local:8080/stream.h264 -pix_fmt yuv420p -f v4l2 /dev/video10
+   ```
+
+   With HTTPS, put the TLS options before `-i`: `-tls_verify 1 -ca_file
+   certs/ca.crt` (the address must be one of the certificate's names,
+   `CERT_HOSTS` in `make cert`) or `-tls_verify 0` to skip the check:
+
+   ```bash
+   ffmpeg -tls_verify 1 -ca_file certs/ca.crt -fflags nobuffer -flags low_delay -f h264 -i https://raspberrypi.local:8443/stream.h264 -pix_fmt yuv420p -f v4l2 /dev/video10
+   ```
+
+4. Choose **Pi HQ Camera** in the meeting app.
+
+To create the camera at every boot:
+
+```bash
+echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
+```
+
+```bash
+echo 'options v4l2loopback video_nr=10 card_label="Pi HQ Camera" exclusive_caps=1' | sudo tee /etc/modprobe.d/v4l2loopback.conf
+```
+
+**Windows, macOS: OBS Studio.** Add a *Media Source*, untick *Local file*,
+enter the `/stream.h264` address with input format `h264` (or use
+`/stream.mjpeg`), turn off buffering, then click *Start Virtual Camera* and
+choose *OBS Virtual Camera* in the meeting app.
+
+Notes:
+
+- **No audio:** use the laptop's microphone.
+- **4:3 picture:** all stream sizes are 4:3; meeting apps crop or pillarbox
+  it to 16:9.
+- `modprobe: FATAL: Module v4l2loopback not found`: the module was not built
+  for the running kernel. Check `dkms status`; after a kernel update without
+  a reboot, reboot first.
+- `Peer certificate failed verification`: ffmpeg does not trust your CA or
+  the address is not in the certificate; use `-ca_file certs/ca.crt` with a
+  name from `CERT_HOSTS`, or `-tls_verify 0`.
+
 ## Development without a Pi
 
 ```bash
